@@ -1,0 +1,24 @@
+# Deep RL Trading System Requirements
+# Python 3.8+
+
+# Core dependencies
+numpy>=1.21.0
+pandas>=1.3.0
+matplotlib>=3.4.0
+seaborn>=0.11.0
+
+# Data collection
+yfinance>=0.2.0
+
+# Reinforcement Learning
+gymnasium>=0.29.0
+stable-baselines3>=2.0.0
+torch>=2.0.0
+
+# Optional: Technical indicators (alternative to pandas implementation)
+# TA-Lib>=0.4.0  # Requires separate C library installation
+# stockstats>=0.5.0
+
+# Utilities
+tqdm>=4.62.0
+tensorboard>=2.10.0
