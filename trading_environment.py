@@ -254,7 +254,6 @@ class TradingEnvironment(gym.Env):
     def _calculate_reward(self):
         """
         Calculate reward based on portfolio performance
-
         Returns:
             float: Reward value
         """
@@ -262,14 +261,16 @@ class TradingEnvironment(gym.Env):
         if len(self.portfolio_values) < 2:
             return 0.0
 
-        # Portfolio return
+        # Portfolio return for current step
         current_value = self.portfolio_values[-1]
         previous_value = self.portfolio_values[-2]
-        returns = (current_value - previous_value) / previous_value
+        returns = (current_value - previous_value) / (previous_value + 1e-8)
 
         # Risk adjustment using recent volatility
-        if len(self.portfolio_values) >= 20:
-            recent_returns = np.diff(self.portfolio_values[-20:]) / self.portfolio_values[-21:-1]
+        if len(self.portfolio_values) >= 21:
+            # Use last 21 values to get 20 returns
+            recent_vals = np.array(self.portfolio_values[-21:], dtype=np.float32)
+            recent_returns = np.diff(recent_vals) / (recent_vals[:-1] + 1e-8)
             volatility = np.std(recent_returns)
             risk_adjusted_return = returns / (volatility + 1e-6)
         else:
@@ -277,8 +278,7 @@ class TradingEnvironment(gym.Env):
 
         # Scale reward
         reward = risk_adjusted_return * self.reward_scaling
-
-        return reward
+        return float(reward)
 
     def _get_info(self):
         """

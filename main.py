@@ -85,6 +85,16 @@ def main(args):
     # 4. Train Agent
     print("\n[4/5] Training Agent...")
     print("-"*60)
+    
+    # Check GPU availability
+    try:
+        import torch
+        if torch.cuda.is_available():
+            print(f"GPU Available: {torch.cuda.get_device_name(0)}")
+        else:
+            print("GPU not available, using CPU")
+    except ImportError:
+        print("PyTorch not installed, using default device")
 
     agent = PPOTradingAgent(
         env=train_env,
@@ -93,7 +103,8 @@ def main(args):
         batch_size=args.batch_size,
         n_epochs=args.n_epochs,
         gamma=args.gamma,
-        verbose=1
+        verbose=1,
+        device=args.device
     )
 
     model_path = os.path.join(args.model_dir, f"{args.ticker.lower()}_ppo_agent")
@@ -176,6 +187,9 @@ if __name__ == "__main__":
     parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs per update')
     parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor')
     parser.add_argument('--model_dir', type=str, default='models', help='Directory to save models')
+    parser.add_argument('--device', type=str, default='auto', 
+                        choices=['auto', 'cuda', 'cpu'],
+                        help='Device to use for training (auto, cuda, or cpu)')
 
     args = parser.parse_args()
 

@@ -13,7 +13,16 @@ yfinance>=0.2.0
 # Reinforcement Learning
 gymnasium>=0.29.0
 stable-baselines3>=2.0.0
-torch>=2.0.0
+
+# PyTorch - Install appropriate version for your system
+# For CPU only:
+# torch>=2.0.0
+# For GPU (CUDA) - Install from PyTorch website based on your CUDA version:
+# Visit https://pytorch.org/get-started/locally/ for the correct command
+# Example for CUDA 11.8:
+# torch>=2.0.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+# Example for CUDA 12.1:
+# torch>=2.0.0+cu121 --index-url https://download.pytorch.org/whl/cu121
 
 # Optional: Technical indicators (alternative to pandas implementation)
 # TA-Lib>=0.4.0  # Requires separate C library installation

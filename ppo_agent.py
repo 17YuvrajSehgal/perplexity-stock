@@ -9,6 +9,7 @@ from stable_baselines3.common.monitor import Monitor
 import numpy as np
 import pandas as pd
 import os
+import torch
 from typing import Optional
 
 
@@ -55,6 +56,33 @@ class TradingCallback(BaseCallback):
                 print(f"Mean Portfolio Value: ${np.mean(self.portfolio_values):.2f}")
 
 
+def get_device(device='auto'):
+    """
+    Get the appropriate device (CPU or GPU) for training
+    
+    Args:
+        device: 'auto', 'cuda', 'cpu', or specific device like 'cuda:0'
+    
+    Returns:
+        torch.device: The device to use
+    """
+    if device == 'auto':
+        if torch.cuda.is_available():
+            device = 'cuda'
+            print(f"✓ GPU detected: {torch.cuda.get_device_name(0)}")
+            print(f"✓ CUDA version: {torch.version.cuda}")
+            print(f"✓ GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+        else:
+            device = 'cpu'
+            print("⚠ GPU not available, using CPU")
+    else:
+        if device.startswith('cuda') and not torch.cuda.is_available():
+            print(f"⚠ {device} requested but CUDA not available, falling back to CPU")
+            device = 'cpu'
+    
+    return torch.device(device)
+
+
 class PPOTradingAgent:
     """
     PPO Agent wrapper for stock trading
@@ -72,7 +100,8 @@ class PPOTradingAgent:
         gae_lambda=0.95,
         clip_range=0.2,
         ent_coef=0.01,
-        verbose=1
+        verbose=1,
+        device='auto'
     ):
         """
         Initialize PPO agent
@@ -89,14 +118,20 @@ class PPOTradingAgent:
             clip_range: PPO clipping range
             ent_coef: Entropy coefficient for exploration
             verbose: Verbosity level
+            device: Device to use ('auto', 'cuda', 'cpu', or 'cuda:0')
         """
         self.env = env
+        
+        # Get device
+        self.device = get_device(device)
+        if verbose:
+            print(f"Using device: {self.device}")
 
         # Wrap environment
         self.vec_env = DummyVecEnv([lambda: Monitor(env)])
         self.vec_env = VecNormalize(self.vec_env, norm_obs=True, norm_reward=True)
 
-        # Initialize PPO model
+        # Initialize PPO model with device
         self.model = PPO(
             policy=policy,
             env=self.vec_env,
@@ -109,7 +144,8 @@ class PPOTradingAgent:
             clip_range=clip_range,
             ent_coef=ent_coef,
             verbose=verbose,
-            tensorboard_log='./tensorboard_logs/'
+            tensorboard_log='./tensorboard_logs/',
+            device=self.device
         )
 
     def train(

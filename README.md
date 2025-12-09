@@ -69,8 +69,31 @@ conda activate trading_env
 ```
 
 ### Step 3: Install Dependencies
+
+**For CPU only:**
 ```bash
 pip install -r requirements.txt
+pip install torch torchvision torchaudio
+```
+
+**For GPU support (recommended for faster training):**
+```bash
+# First, check GPU_SETUP.md for detailed instructions
+# Then install PyTorch with CUDA support based on your CUDA version
+
+# For CUDA 11.8:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# For CUDA 12.1:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Then install other dependencies
+pip install -r requirements.txt
+```
+
+**Verify GPU setup:**
+```bash
+python check_gpu.py
 ```
 
 ### Optional: Install TA-Lib (for advanced indicators)
@@ -145,6 +168,7 @@ Training Arguments:
   --batch_size          Mini-batch size (default: 64)
   --n_epochs            Epochs per update (default: 10)
   --gamma               Discount factor (default: 0.99)
+  --device              Device: auto, cuda, or cpu (default: auto)
 ```
 
 ## 📊 Module Details
@@ -349,9 +373,10 @@ This encourages:
 - Consider market impact
 
 ### Computational Requirements
-- Training 100k steps: ~10-30 minutes on CPU
-- Use GPU for faster training with large networks
-- Start with shorter training runs for testing
+- **CPU Training**: 100k steps ~30-60 minutes
+- **GPU Training**: 100k steps ~5-15 minutes (3-5x faster)
+- GPU recommended for production training
+- See `GPU_SETUP.md` for GPU configuration guide
 
 ### Deployment Caution
 - **This is for educational/research purposes**
