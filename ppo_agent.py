@@ -101,7 +101,8 @@ class PPOTradingAgent:
         clip_range=0.2,
         ent_coef=0.01,
         verbose=1,
-        device='auto'
+        device='auto',
+        tensorboard_log='./tensorboard_logs/'
     ):
         """
         Initialize PPO agent
@@ -144,7 +145,7 @@ class PPOTradingAgent:
             clip_range=clip_range,
             ent_coef=ent_coef,
             verbose=verbose,
-            tensorboard_log='./tensorboard_logs/',
+            tensorboard_log=tensorboard_log,
             device=self.device
         )
 

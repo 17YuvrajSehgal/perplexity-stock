@@ -21,6 +21,24 @@ def main(args):
     print("="*60)
     print("DEEP RL TRADING SYSTEM")
     print("="*60)
+    
+    # Create unified output directory structure
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join(args.output_dir, f"{args.ticker.lower()}_{timestamp}")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create subdirectories
+    models_dir = os.path.join(output_dir, "models")
+    data_dir = os.path.join(output_dir, "data")
+    plots_dir = os.path.join(output_dir, "plots")
+    logs_dir = os.path.join(output_dir, "logs")
+    results_dir = os.path.join(output_dir, "results")
+    
+    for dir_path in [models_dir, data_dir, plots_dir, logs_dir, results_dir]:
+        os.makedirs(dir_path, exist_ok=True)
+    
+    print(f"\nOutput directory: {output_dir}")
+    print("-"*60)
 
     # 1. Data Collection
     print("\n[1/5] Collecting Data...")
@@ -40,8 +58,8 @@ def main(args):
         collector.add_technical_indicators()
         df = collector.prepare_data(normalize=True)
 
-        # Save processed data
-        data_filename = f"{args.ticker.lower()}_processed.csv"
+        # Save processed data to output directory
+        data_filename = os.path.join(data_dir, f"{args.ticker.lower()}_processed.csv")
         collector.save_data(data_filename)
         print(f"Processed data saved to {data_filename}")
 
@@ -104,10 +122,11 @@ def main(args):
         n_epochs=args.n_epochs,
         gamma=args.gamma,
         verbose=1,
-        device=args.device
+        device=args.device,
+        tensorboard_log=logs_dir
     )
 
-    model_path = os.path.join(args.model_dir, f"{args.ticker.lower()}_ppo_agent")
+    model_path = os.path.join(models_dir, f"{args.ticker.lower()}_ppo_agent")
     agent.train(
         total_timesteps=args.total_timesteps,
         save_path=model_path
@@ -140,7 +159,7 @@ def main(args):
             print(f"{key:.<40} {value:>15}")
 
     # Visualize results
-    plot_filename = f"{args.ticker.lower()}_performance.png"
+    plot_filename = os.path.join(plots_dir, f"{args.ticker.lower()}_performance.png")
     evaluator.plot_performance(
         portfolio_values=portfolio_values,
         baseline_values=baseline_values,
@@ -150,15 +169,38 @@ def main(args):
     )
 
     # Export results
-    results_filename = f"{args.ticker.lower()}_results.csv"
+    results_filename = os.path.join(results_dir, f"{args.ticker.lower()}_results.csv")
     evaluator.export_results(metrics, comparison, results_filename)
+    
+    # Save training configuration
+    config_filename = os.path.join(output_dir, "config.txt")
+    with open(config_filename, 'w') as f:
+        f.write("Training Configuration\n")
+        f.write("="*60 + "\n")
+        f.write(f"Ticker: {args.ticker}\n")
+        f.write(f"Start Date: {args.start_date}\n")
+        f.write(f"End Date: {args.end_date}\n")
+        f.write(f"Total Timesteps: {args.total_timesteps}\n")
+        f.write(f"Learning Rate: {args.learning_rate}\n")
+        f.write(f"Batch Size: {args.batch_size}\n")
+        f.write(f"N Steps: {args.n_steps}\n")
+        f.write(f"N Epochs: {args.n_epochs}\n")
+        f.write(f"Device: {args.device}\n")
+        f.write(f"Action Space: {args.action_space}\n")
+        f.write(f"Initial Balance: {args.initial_balance}\n")
+        f.write(f"Transaction Cost: {args.transaction_cost}\n")
+        f.write(f"Train Split: {args.train_split}\n")
 
     print("\n" + "="*60)
     print("TRAINING AND EVALUATION COMPLETE!")
     print("="*60)
-    print(f"Model saved to: {model_path}")
-    print(f"Performance plot: {plot_filename}")
-    print(f"Results CSV: {results_filename}")
+    print(f"All outputs saved to: {output_dir}")
+    print(f"  - Models: {models_dir}")
+    print(f"  - Data: {data_dir}")
+    print(f"  - Plots: {plots_dir}")
+    print(f"  - Results: {results_dir}")
+    print(f"  - Logs: {logs_dir}")
+    print("="*60)
 
 
 if __name__ == "__main__":
@@ -186,15 +228,16 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=64, help='Mini-batch size')
     parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs per update')
     parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor')
-    parser.add_argument('--model_dir', type=str, default='models', help='Directory to save models')
     parser.add_argument('--device', type=str, default='auto', 
                         choices=['auto', 'cuda', 'cpu'],
                         help='Device to use for training (auto, cuda, or cpu)')
+    parser.add_argument('--output_dir', type=str, default='outputs', 
+                        help='Base directory for all outputs (creates timestamped subdirectory)')
 
     args = parser.parse_args()
 
-    # Create directories
-    os.makedirs(args.model_dir, exist_ok=True)
+    # Create base output directory
+    os.makedirs(args.output_dir, exist_ok=True)
 
     # Run main pipeline
     main(args)

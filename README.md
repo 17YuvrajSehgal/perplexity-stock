@@ -125,6 +125,18 @@ pip install TA_Lib‑0.4.XX‑cpXX‑cpXX‑win_amd64.whl
 python main.py --ticker AAPL --total_timesteps 100000
 ```
 
+**Note**: All outputs are now organized in a timestamped directory under `outputs/`:
+```
+outputs/
+└── aapl_20240101_120000/
+    ├── models/          # Trained models
+    ├── data/            # Processed data
+    ├── plots/           # Performance plots
+    ├── results/         # CSV results
+    ├── logs/            # TensorBoard logs
+    └── config.txt       # Training configuration
+```
+
 This will:
 1. Download AAPL data from 2020-2024
 2. Add technical indicators
@@ -438,6 +450,21 @@ To extend this system:
 3. Experiment with different RL algorithms (SAC, TD3, A2C)
 4. Implement hierarchical RL for multi-timeframe trading
 5. Add portfolio optimization for multiple stocks
+
+## 🖥️ Running on Compute Clusters
+
+For running on SLURM-based clusters (e.g., Canada Research Alliance):
+
+1. **Transfer files to cluster** (see `CLUSTER_SETUP.md`)
+2. **Set up environment** on cluster
+3. **Submit job**:
+   ```bash
+   sbatch run_training.slurm
+   ```
+4. **Monitor**: `squeue -u $USER`
+5. **Check results**: `ls -lh outputs/`
+
+See `CLUSTER_SETUP.md` for detailed cluster setup instructions.
 
 ## 📄 License
 

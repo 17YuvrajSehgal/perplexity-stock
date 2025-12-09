@@ -1,2 +1,59 @@
-.idea
-.venv
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+trading_env/
+venv/
+env/
+ENV/
+
+# Outputs (organized in outputs/ directory)
+outputs/
+*.csv
+*.png
+*.zip
+*.pkl
+
+# Models
+models/
+*.zip
+*.pkl
+
+# Tensorboard logs
+#tensorboard_logs/
+#logs/
+
+# SLURM outputs
+#slurm_outputs/
+#*.out
+#*.err
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data files (optional - uncomment if you don't want to track data)
+# *_processed.csv
+# *.csv
+
+# Environment variables
+.env
+.env.local
