@@ -6,7 +6,7 @@
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
 
@@ -23,7 +23,7 @@ echo "=========================================="
 # Uncomment and modify as needed for your cluster
 module load python/3.13.2
 module load cuda/12
-module load cudnn/9.13.1.26
+module load cudnn/9
 
 # Activate virtual environment if using one
 # If you have a conda environment:
@@ -33,7 +33,6 @@ source .venv/bin/activate
 
 # Set environment variables
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-export CUDA_VISIBLE_DEVICES=0
 
 # Print GPU information
 echo "GPU Information:"

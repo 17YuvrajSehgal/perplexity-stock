@@ -28,31 +28,41 @@ class TradingEvaluator:
         Returns:
             dict: Dictionary of metrics
         """
-        portfolio_values = np.array(portfolio_values)
+        portfolio_values = np.array(portfolio_values, dtype=np.float64)
 
-        # Returns
-        returns = np.diff(portfolio_values) / portfolio_values[:-1]
-        total_return = (portfolio_values[-1] - portfolio_values[0]) / portfolio_values[0]
+        # Handle edge cases: need at least 2 points to compute returns
+        if portfolio_values.size < 2:
+            returns = np.array([], dtype=np.float64)
+            total_return = 0.0
+            volatility = 0.0
+            sharpe_ratio = 0.0
+            sortino_ratio = 0.0
+            calmar_ratio = 0.0
+            max_drawdown = 0.0
+        else:
+            # Returns
+            returns = np.diff(portfolio_values) / portfolio_values[:-1]
+            total_return = (portfolio_values[-1] - portfolio_values[0]) / portfolio_values[0]
 
-        # Risk metrics
-        volatility = np.std(returns) * np.sqrt(252)  # Annualized
+            # Risk metrics
+            volatility = np.std(returns) * np.sqrt(252)  # Annualized
 
-        # Sharpe ratio (assuming 0% risk-free rate)
-        sharpe_ratio = (np.mean(returns) * 252) / (volatility + 1e-8)
+            # Sharpe ratio (assuming 0% risk-free rate)
+            sharpe_ratio = (np.mean(returns) * 252) / (volatility + 1e-8)
 
-        # Maximum drawdown
-        cumulative_returns = portfolio_values / portfolio_values[0]
-        running_max = np.maximum.accumulate(cumulative_returns)
-        drawdown = (cumulative_returns - running_max) / running_max
-        max_drawdown = np.min(drawdown)
+            # Maximum drawdown
+            cumulative_returns = portfolio_values / portfolio_values[0]
+            running_max = np.maximum.accumulate(cumulative_returns)
+            drawdown = (cumulative_returns - running_max) / running_max
+            max_drawdown = np.min(drawdown)
 
-        # Sortino ratio (downside risk)
-        downside_returns = returns[returns < 0]
-        downside_std = np.std(downside_returns) if len(downside_returns) > 0 else 1e-8
-        sortino_ratio = (np.mean(returns) * 252) / (downside_std * np.sqrt(252))
+            # Sortino ratio (downside risk)
+            downside_returns = returns[returns < 0]
+            downside_std = np.std(downside_returns) if len(downside_returns) > 0 else 1e-8
+            sortino_ratio = (np.mean(returns) * 252) / (downside_std * np.sqrt(252))
 
-        # Calmar ratio (return / max drawdown)
-        calmar_ratio = (total_return * 252) / (abs(max_drawdown) + 1e-8)
+            # Calmar ratio (return / max drawdown)
+            calmar_ratio = (total_return * 252) / (abs(max_drawdown) + 1e-8)
 
         # Win rate (if trades provided)
         win_rate = None
@@ -86,17 +96,19 @@ class TradingEvaluator:
                 total_loss = sum(losing_trades)
                 profit_factor = total_profit / (total_loss + 1e-8)
 
+        annualized_return_pct = total_return * 252 / len(returns) * 100 if len(returns) > 0 else 0.0
+
         metrics = {
             'Total Return': total_return,
             'Total Return %': total_return * 100,
-            'Annualized Return %': total_return * 252 / len(returns) * 100,
+            'Annualized Return %': annualized_return_pct,
             'Volatility (Annual)': volatility,
             'Sharpe Ratio': sharpe_ratio,
             'Sortino Ratio': sortino_ratio,
             'Calmar Ratio': calmar_ratio,
             'Max Drawdown': max_drawdown,
             'Max Drawdown %': max_drawdown * 100,
-            'Final Portfolio Value': portfolio_values[-1],
+            'Final Portfolio Value': portfolio_values[-1] if len(portfolio_values) > 0 else 0.0,
             'Number of Trades': len(trades) if trades else 0,
             'Win Rate': win_rate,
             'Average Win': avg_win,
@@ -181,8 +193,9 @@ class TradingEvaluator:
 
         # 1. Portfolio Value Over Time
         ax1 = plt.subplot(3, 2, 1)
-        ax1.plot(portfolio_values, label='Agent', linewidth=2)
-        if baseline_values is not None:
+        if len(portfolio_values) > 0:
+            ax1.plot(portfolio_values, label='Agent', linewidth=2)
+        if baseline_values is not None and len(baseline_values) > 0:
             ax1.plot(baseline_values, label='Buy & Hold', linewidth=2, alpha=0.7)
         ax1.set_title('Portfolio Value Over Time', fontsize=12, fontweight='bold')
         ax1.set_xlabel('Time Steps')
@@ -192,8 +205,9 @@ class TradingEvaluator:
 
         # 2. Returns Distribution
         ax2 = plt.subplot(3, 2, 2)
-        returns = np.diff(portfolio_values) / portfolio_values[:-1]
-        ax2.hist(returns, bins=50, alpha=0.7, edgecolor='black')
+        returns = np.diff(portfolio_values) / portfolio_values[:-1] if len(portfolio_values) > 1 else np.array([])
+        if len(returns) > 0:
+            ax2.hist(returns, bins=50, alpha=0.7, edgecolor='black')
         ax2.axvline(x=0, color='r', linestyle='--', linewidth=2)
         ax2.set_title('Returns Distribution', fontsize=12, fontweight='bold')
         ax2.set_xlabel('Returns')
@@ -202,9 +216,10 @@ class TradingEvaluator:
 
         # 3. Cumulative Returns
         ax3 = plt.subplot(3, 2, 3)
-        cumulative_returns = (np.array(portfolio_values) / portfolio_values[0] - 1) * 100
-        ax3.plot(cumulative_returns, linewidth=2, color='green')
-        ax3.fill_between(range(len(cumulative_returns)), cumulative_returns, alpha=0.3, color='green')
+        if len(portfolio_values) > 0:
+            cumulative_returns = (np.array(portfolio_values) / portfolio_values[0] - 1) * 100
+            ax3.plot(cumulative_returns, linewidth=2, color='green')
+            ax3.fill_between(range(len(cumulative_returns)), cumulative_returns, alpha=0.3, color='green')
         ax3.axhline(y=0, color='black', linestyle='-', linewidth=1)
         ax3.set_title('Cumulative Returns (%)', fontsize=12, fontweight='bold')
         ax3.set_xlabel('Time Steps')
@@ -213,10 +228,11 @@ class TradingEvaluator:
 
         # 4. Drawdown
         ax4 = plt.subplot(3, 2, 4)
-        cumulative = np.array(portfolio_values) / portfolio_values[0]
-        running_max = np.maximum.accumulate(cumulative)
-        drawdown = (cumulative - running_max) / running_max * 100
-        ax4.fill_between(range(len(drawdown)), drawdown, alpha=0.5, color='red')
+        if len(portfolio_values) > 0:
+            cumulative = np.array(portfolio_values) / portfolio_values[0]
+            running_max = np.maximum.accumulate(cumulative)
+            drawdown = (cumulative - running_max) / running_max * 100
+            ax4.fill_between(range(len(drawdown)), drawdown, alpha=0.5, color='red')
         ax4.set_title('Drawdown (%)', fontsize=12, fontweight='bold')
         ax4.set_xlabel('Time Steps')
         ax4.set_ylabel('Drawdown (%)')
@@ -246,12 +262,12 @@ class TradingEvaluator:
         ax6 = plt.subplot(3, 2, 6)
         window = 30
         rolling_sharpe = []
-        for i in range(window, len(returns)):
-            window_returns = returns[i-window:i]
-            sharpe = (np.mean(window_returns) * 252) / (np.std(window_returns) * np.sqrt(252) + 1e-8)
-            rolling_sharpe.append(sharpe)
-
-        ax6.plot(range(window, len(returns)), rolling_sharpe, linewidth=2, color='purple')
+        if len(returns) >= window:
+            for i in range(window, len(returns)):
+                window_returns = returns[i-window:i]
+                sharpe = (np.mean(window_returns) * 252) / (np.std(window_returns) * np.sqrt(252) + 1e-8)
+                rolling_sharpe.append(sharpe)
+            ax6.plot(range(window, len(returns)), rolling_sharpe, linewidth=2, color='purple')
         ax6.axhline(y=0, color='black', linestyle='--', linewidth=1)
         ax6.set_title(f'Rolling Sharpe Ratio (Window={window})', fontsize=12, fontweight='bold')
         ax6.set_xlabel('Time Steps')
