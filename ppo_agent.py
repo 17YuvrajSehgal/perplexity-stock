@@ -254,7 +254,11 @@ class PPOTradingAgent:
                 action, _ = self.model.predict(obs, deterministic=True)
                 actions_taken.append(action[0])
                 obs, reward, done, info = test_vec_env.step(action)
-                episode_reward += reward[0]
+
+                # VecNormalize + DummyVecEnv return done array; also handle truncated via done
+                done = done.any() if isinstance(done, (list, tuple, np.ndarray)) else bool(done)
+
+                episode_reward += reward[0] if isinstance(reward, (list, tuple, np.ndarray)) else reward
 
                 if render:
                     test_env.render()

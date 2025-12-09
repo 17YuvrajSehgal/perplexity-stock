@@ -162,7 +162,8 @@ def main(args):
         initial_balance=args.initial_balance,
         transaction_cost=args.transaction_cost,
         window_size=args.window_size,
-        action_space_type=args.action_space
+        action_space_type=args.action_space,
+        deterministic_start=False
     )
 
     test_env = TradingEnvironment(
@@ -170,7 +171,8 @@ def main(args):
         initial_balance=args.initial_balance,
         transaction_cost=args.transaction_cost,
         window_size=args.window_size,
-        action_space_type=args.action_space
+        action_space_type=args.action_space,
+        deterministic_start=True  # deterministic reset for evaluation
     )
 
     print(f"Action space: {train_env.action_space}")

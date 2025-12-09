@@ -36,7 +36,8 @@ class TradingEnvironment(gym.Env):
         reward_scaling: float = 1e-4,
         window_size: int = 20,
         action_space_type: str = 'discrete',  # 'discrete' or 'continuous'
-        features: Optional[list] = None
+        features: Optional[list] = None,
+        deterministic_start: bool = False
     ):
         """
         Initialize trading environment
@@ -58,6 +59,8 @@ class TradingEnvironment(gym.Env):
         self.reward_scaling = reward_scaling
         self.window_size = window_size
         self.action_space_type = action_space_type
+        # If True, reset always starts at the beginning (used for evaluation/backtest)
+        self.deterministic_start = deterministic_start
 
         # Select features for state space
         if features is None:
@@ -112,9 +115,14 @@ class TradingEnvironment(gym.Env):
         """
         super().reset(seed=seed)
 
-        # Reset to random starting point (but ensure enough history)
-        max_start = len(self.df) - 200  # Keep at least 200 steps for episode
-        self.current_step = np.random.randint(self.window_size, max(self.window_size + 1, max_start))
+        # Reset starting point
+        if self.deterministic_start:
+            # Start at the earliest point where window is valid
+            self.current_step = self.window_size
+        else:
+            # Random start but ensure enough remaining steps
+            max_start = len(self.df) - 200  # Keep at least 200 steps for episode
+            self.current_step = np.random.randint(self.window_size, max(self.window_size + 1, max_start))
 
         # Reset portfolio
         self.balance = self.initial_balance
