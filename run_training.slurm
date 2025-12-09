@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=rl_trading
+#SBATCH --account=def-naser2
 #SBATCH --output=slurm_outputs/rl_trading_%j.out
 #SBATCH --error=slurm_outputs/rl_trading_%j.err
 #SBATCH --time=04:00:00
@@ -21,15 +22,15 @@ echo "=========================================="
 
 # Load modules (adjust based on your cluster's available modules)
 # Uncomment and modify as needed for your cluster
-# module load python/3.9
-# module load cuda/11.8
-# module load cudnn/8.6
+module load python/3.13.2
+module load cuda/12.
+module load cudnn/9.13.1.26
 
 # Activate virtual environment if using one
 # If you have a conda environment:
 # source activate trading_env
 # Or if using venv:
-# source trading_env/bin/activate
+source .venv/bin/activate
 
 # Set environment variables
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
