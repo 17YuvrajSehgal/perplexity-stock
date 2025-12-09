@@ -15,11 +15,11 @@ env/
 ENV/
 
 # Outputs (organized in outputs/ directory)
-outputs/
-*.csv
-*.png
-*.zip
-*.pkl
+#outputs/
+#*.csv
+#*.png
+#*.zip
+#*.pkl
 
 # Models
 models/

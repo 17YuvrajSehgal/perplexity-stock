@@ -48,6 +48,12 @@ python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA av
 # Create output directories
 mkdir -p slurm_outputs
 mkdir -p outputs
+mkdir -p data  # For storing data files if needed
+
+# Note: If cluster has no internet access, ensure data files are available:
+# - Place {ticker}_processed.csv in current directory, or
+# - Place in data/ subdirectory, or
+# - Use --data_file argument to specify path
 
 # Default parameters (modify as needed)
 TICKER=${TICKER:-AAPL}

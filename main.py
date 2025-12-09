@@ -14,6 +14,42 @@ from ppo_agent import PPOTradingAgent
 from evaluation import TradingEvaluator
 
 
+def find_existing_data_file(ticker, search_dirs=None):
+    """
+    Search for existing processed data file for the given ticker.
+    
+    Args:
+        ticker: Stock ticker symbol (e.g., 'AAPL')
+        search_dirs: List of directories to search (default: current dir, 'data', 'outputs/*/data')
+    
+    Returns:
+        str or None: Path to existing data file if found, None otherwise
+    """
+    if search_dirs is None:
+        search_dirs = ['.', 'data']
+        # Also search in outputs directories
+        if os.path.exists('outputs'):
+            for root, dirs, files in os.walk('outputs'):
+                if 'data' in dirs:
+                    search_dirs.append(os.path.join(root, 'data'))
+    
+    # Possible filename patterns
+    filename_patterns = [
+        f"{ticker.lower()}_processed.csv",
+        f"{ticker.upper()}_processed.csv",
+    ]
+    
+    for search_dir in search_dirs:
+        if not os.path.exists(search_dir):
+            continue
+        for pattern in filename_patterns:
+            filepath = os.path.join(search_dir, pattern)
+            if os.path.exists(filepath):
+                return filepath
+    
+    return None
+
+
 def main(args):
     """
     Main training and evaluation pipeline
@@ -44,24 +80,64 @@ def main(args):
     print("\n[1/5] Collecting Data...")
     print("-"*60)
 
+    data_loaded = False
+    df = None
+    
+    # Priority 1: Use explicitly provided data file
     if args.data_file and os.path.exists(args.data_file):
-        print(f"Loading data from {args.data_file}")
+        print(f"Loading data from provided file: {args.data_file}")
         df = pd.read_csv(args.data_file, index_col=0)
-    else:
-        print(f"Downloading data for {args.ticker}")
-        collector = DataCollector(
-            ticker_symbol=args.ticker,
-            start_date=args.start_date,
-            end_date=args.end_date
-        )
-        collector.download_data(interval=args.interval)
-        collector.add_technical_indicators()
-        df = collector.prepare_data(normalize=True)
-
-        # Save processed data to output directory
-        data_filename = os.path.join(data_dir, f"{args.ticker.lower()}_processed.csv")
-        collector.save_data(data_filename)
-        print(f"Processed data saved to {data_filename}")
+        data_loaded = True
+        print(f"✓ Successfully loaded data from {args.data_file}")
+    
+    # Priority 2: Search for existing processed data file
+    if not data_loaded:
+        existing_file = find_existing_data_file(args.ticker)
+        if existing_file:
+            print(f"Found existing data file: {existing_file}")
+            df = pd.read_csv(existing_file, index_col=0)
+            data_loaded = True
+            print(f"✓ Successfully loaded existing data for {args.ticker}")
+    
+    # Priority 3: Download new data (only if no existing file found)
+    if not data_loaded:
+        print(f"No existing data file found for {args.ticker}")
+        print(f"Attempting to download data from Yahoo Finance...")
+        
+        try:
+            collector = DataCollector(
+                ticker_symbol=args.ticker,
+                start_date=args.start_date,
+                end_date=args.end_date
+            )
+            downloaded_data = collector.download_data(interval=args.interval)
+            
+            if downloaded_data is not None and len(downloaded_data) > 0:
+                collector.add_technical_indicators()
+                df = collector.prepare_data(normalize=True)
+                data_loaded = True
+                print(f"✓ Successfully downloaded and processed data")
+            else:
+                raise Exception("Download returned empty or None data")
+                
+        except Exception as e:
+            print(f"✗ Error downloading data: {e}")
+            print(f"\n⚠ Cannot download data (possibly no internet access on cluster)")
+            print(f"Please ensure a processed data file exists:")
+            print(f"  - {args.ticker.lower()}_processed.csv in current directory")
+            print(f"  - Or use --data_file to specify the path")
+            print(f"  - Or place data file in a 'data/' subdirectory")
+            raise FileNotFoundError(
+                f"No data available for {args.ticker}. "
+                f"Download failed and no existing data file found. "
+                f"Please provide data file using --data_file or place "
+                f"{args.ticker.lower()}_processed.csv in the current directory."
+            )
+    
+    # Save data to output directory for unified organization
+    data_filename = os.path.join(data_dir, f"{args.ticker.lower()}_processed.csv")
+    df.to_csv(data_filename)
+    print(f"✓ Data saved to output directory: {data_filename}")
 
     print(f"Data shape: {df.shape}")
     print(f"Date range: {df.index[0]} to {df.index[-1]}")
