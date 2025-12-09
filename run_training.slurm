@@ -22,7 +22,7 @@ echo "=========================================="
 # Load modules (adjust based on your cluster's available modules)
 # Uncomment and modify as needed for your cluster
 module load python/3.13.2
-module load cuda/12.
+module load cuda/12
 module load cudnn/9.13.1.26
 
 # Activate virtual environment if using one
