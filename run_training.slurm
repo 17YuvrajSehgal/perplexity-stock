@@ -3,7 +3,7 @@
 #SBATCH --account=def-naser2
 #SBATCH --output=slurm_outputs/rl_trading_%j.out
 #SBATCH --error=slurm_outputs/rl_trading_%j.err
-#SBATCH --time=04:00:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
