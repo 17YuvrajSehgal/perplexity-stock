@@ -111,7 +111,7 @@ if __name__ == "__main__":
     episode_reward = 0.0
     episode_steps = 0
 
-    with common.RewardTracker(writer, stop_reward=np.inf, group_rewards=100) as tracker:
+    with common.RewardTracker(writer, stop_reward=np.inf, group_rewards=10) as tracker:
         while True:
             step_idx += 1
 

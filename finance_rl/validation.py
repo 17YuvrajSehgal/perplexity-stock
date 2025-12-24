@@ -64,7 +64,8 @@ def validation_run(env, net, episodes=100, device="cpu", epsilon=0.02, comission
         # -------------------------------------------------
         while True:
             # Convert observation to a torch tensor
-            obs_v = torch.tensor([obs]).to(device)
+            obs_v = torch.from_numpy(np.asarray(obs, dtype=np.float32)).unsqueeze(0).to(device)
+
 
             # Get Q-values for all actions
             out_v = net(obs_v)
