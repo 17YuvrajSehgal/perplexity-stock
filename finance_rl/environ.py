@@ -4,15 +4,16 @@ from gymnasium.utils import seeding
 import enum
 import numpy as np
 
+import config
 # Import our custom Yahoo Finance data loader
 from . import data_yf as data
 
 
 # Default number of past days ("bars") the agent can see
-DEFAULT_BARS_COUNT = 10
+DEFAULT_BARS_COUNT = config.EnvConfig.DEFAULT_BARS_COUNT
 
 # Transaction cost applied when buying or closing a position
-DEFAULT_COMMISSION_PERC = 0.1
+DEFAULT_COMMISSION_PERC = config.EnvConfig.DEFAULT_COMMISSION_PERC
 
 
 # ---------------------------------------------------------
