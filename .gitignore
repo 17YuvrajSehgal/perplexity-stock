@@ -21,11 +21,6 @@ ENV/
 #*.zip
 #*.pkl
 
-# Models
-models/
-*.zip
-*.pkl
-
 # Tensorboard logs
 #tensorboard_logs/
 #logs/

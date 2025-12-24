@@ -1,0 +1,3 @@
+class EnvConfig:
+    DEFAULT_BARS_COUNT = 10
+    DEFAULT_COMMISSION_PERC = 0.1
