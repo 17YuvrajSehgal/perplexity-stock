@@ -2,22 +2,13 @@
 """
 PPO training script for your finance_rl trading environment.
 
-Updates in this version
------------------------
-✅ Separate train vs validation env:
-   - env_train is TimeLimit-wrapped (proper Gymnasium truncation)
-   - env_val is unwrapped base env (no wrapper-private attributes needed)
-
-✅ Save BEST model by validation episode_reward:
-   - saves/ppo_<run>_best.pt
-
-✅ Add rollout reward heartbeat:
-   - roll_sum / roll_mean printed + logged
-
-✅ TensorBoard logs include:
-   - ppo/* (losses, entropy, kl, clipfrac, explained_variance)
-   - train/* (fps, episodes, rollout reward stats, episodic reward/steps)
-   - val/* (episode_reward, trade stats)
+Key improvements in this version
+--------------------------------
+✅ Separate train vs validation env instances (no shared state)
+✅ Training terminates by default (finite --max_rollouts)
+✅ Optional early stopping based on validation episode_reward (patience + min_delta)
+✅ Still saves BEST model by validation episode_reward: saves/ppo_<run>_best.pt
+✅ Rollout reward heartbeat + full TensorBoard logs as before
 
 Usage
 -----
@@ -26,6 +17,10 @@ python -u train_ppo.py -r ppo_aapl --data yf_data
 
 GPU:
 python -u train_ppo.py -r ppo_aapl --data yf_data --cuda
+
+Recommended (finite + early-stop):
+python -u train_ppo.py -r ppo_aapl_fixed --data yf_data --cuda \
+  --max_rollouts 500 --early_stop --patience 20 --min_rollouts 50 --val_every_rollouts 10
 """
 from __future__ import annotations
 
@@ -83,13 +78,38 @@ def policy_act(model, obs, device, greedy: bool = False):
     return int(action_t.item()), float(logprob_t.item()), float(value.item())
 
 
+def build_env(
+    prices,
+    *,
+    bars: int,
+    volumes: bool,
+    extra_features: bool,
+    reward_on_close: bool,
+    reward_mode: str,
+    state_1d: bool,
+) -> gym.Env:
+    """
+    Build a fresh StocksEnv instance.
+    """
+    return environ.StocksEnv(
+        prices,
+        bars_count=bars,
+        volumes=volumes,
+        extra_features=extra_features,
+        reset_on_close=False,
+        reward_on_close=reward_on_close,
+        reward_mode=reward_mode,
+        state_1d=state_1d,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-r", "--run", required=True, help="Run name for logs/checkpoints")
     parser.add_argument("--data", default="yf_data", help="Directory with yfinance CSVs")
     parser.add_argument("--cuda", action="store_true", help="Use CUDA if available")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--time_limit", type=int, default=1000, help="Max steps per episode")
+    parser.add_argument("--time_limit", type=int, default=1000, help="Max steps per episode (TimeLimit truncation)")
 
     # PPO hyperparams
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -117,7 +137,15 @@ def main():
     # Logging + checkpoints
     parser.add_argument("--val_every_rollouts", type=int, default=10)
     parser.add_argument("--save_every_rollouts", type=int, default=10)
-    parser.add_argument("--max_rollouts", type=int, default=0, help="0 = run forever, else stop after N rollouts")
+
+    # IMPORTANT: don't run forever by default
+    parser.add_argument("--max_rollouts", type=int, default=500, help="Stop after N rollouts (default: 500)")
+
+    # Optional early stopping on validation
+    parser.add_argument("--early_stop", action="store_true", help="Enable early stopping based on val episode_reward")
+    parser.add_argument("--patience", type=int, default=20, help="Validations without improvement before stopping")
+    parser.add_argument("--min_rollouts", type=int, default=50, help="Do not early-stop before this many rollouts")
+    parser.add_argument("--min_delta", type=float, default=1e-3, help="Min improvement to reset patience")
 
     args = parser.parse_args()
 
@@ -133,23 +161,29 @@ def main():
     # -------------------------
     prices = data_yf.load_many_from_dir(args.data)
 
-    # Base env (unwrapped): use for validation (clean) and as inner env for training wrapper
-    env_base = environ.StocksEnv(
+    extra_features = (not args.no_extra)
+
+    # Separate env instances to avoid state coupling between train and validation
+    env_train_base = build_env(
         prices,
-        bars_count=args.bars,
+        bars=args.bars,
         volumes=args.volumes,
-        extra_features=(not args.no_extra),
-        reset_on_close=False,
+        extra_features=extra_features,
         reward_on_close=args.reward_on_close,
         reward_mode=args.reward_mode,
         state_1d=args.state_1d,
     )
+    env_train = gym.wrappers.TimeLimit(env_train_base, max_episode_steps=args.time_limit)
 
-    # Training env is TimeLimit-wrapped (proper truncated flag)
-    env_train = gym.wrappers.TimeLimit(env_base, max_episode_steps=args.time_limit)
-
-    # Validation env stays unwrapped
-    env_val = env_base
+    env_val = build_env(
+        prices,
+        bars=args.bars,
+        volumes=args.volumes,
+        extra_features=extra_features,
+        reward_on_close=args.reward_on_close,
+        reward_mode=args.reward_mode,
+        state_1d=args.state_1d,
+    )
 
     obs_shape = env_train.observation_space.shape
     n_actions = env_train.action_space.n
@@ -180,9 +214,10 @@ def main():
     t0 = time.time()
 
     best_val_reward = -1e9  # save best by val episode_reward
+    no_improve = 0          # for early stopping
 
     print(f"[PPO] device={device} obs_shape={obs_shape} actions={n_actions}")
-    print(f"[PPO] reward_mode={args.reward_mode} volumes={args.volumes} extra_features={not args.no_extra}")
+    print(f"[PPO] reward_mode={args.reward_mode} volumes={args.volumes} extra_features={extra_features}")
     print(f"[PPO] logs: runs/  checkpoints: saves/")
     print("------------------------------------------------------------")
 
@@ -191,7 +226,7 @@ def main():
     # -------------------------
     while True:
         rollout_idx += 1
-        buf = RolloutBuffer(obs_shape=obs_shape, size=args.rollout_steps, device=device)
+        buf = RolloutBuffer(obs_shape=obs_shape, size=args.rollout_steps, device=str(device))
 
         # ===== Collect rollout =====
         for _ in range(args.rollout_steps):
@@ -225,7 +260,7 @@ def main():
                 episode_reward = 0.0
                 episode_steps = 0
 
-        # Rollout reward heartbeat (how much signal are we seeing in this rollout?)
+        # Rollout reward heartbeat
         roll_sum = float(buf.rewards.sum())
         roll_mean = float(buf.rewards.mean())
         writer.add_scalar("train/rollout_reward_sum", roll_sum, global_step)
@@ -246,7 +281,7 @@ def main():
         approx_kls = []
         clipfracs = []
 
-        for epoch in range(args.epochs):
+        for _epoch in range(args.epochs):
             for batch in buf.get_batches(batch_size=args.minibatch, shuffle=True):
                 logits, values = model(batch.obs)
                 dist = Categorical(logits=logits)
@@ -265,7 +300,7 @@ def main():
                 # Value loss
                 loss_v = (batch.returns - values).pow(2).mean()
 
-                # Total loss (maximize entropy => subtract entropy term)
+                # Total loss
                 loss = loss_pi + args.value_coef * loss_v - args.entropy_coef * entropy
 
                 optimizer.zero_grad(set_to_none=True)
@@ -274,16 +309,16 @@ def main():
                 optimizer.step()
 
                 with torch.no_grad():
-                    approx_kl = (batch.old_logprobs - new_logp).mean().item()
-                    clipfrac = (torch.abs(ratio - 1.0) > args.clip_eps).float().mean().item()
+                    approx_kl = float((batch.old_logprobs - new_logp).mean().item())
+                    clipfrac = float((torch.abs(ratio - 1.0) > args.clip_eps).float().mean().item())
 
-                policy_losses.append(loss_pi.item())
-                value_losses.append(loss_v.item())
-                entropies.append(entropy.item())
+                policy_losses.append(float(loss_pi.item()))
+                value_losses.append(float(loss_v.item()))
+                entropies.append(float(entropy.item()))
                 approx_kls.append(approx_kl)
                 clipfracs.append(clipfrac)
 
-            # Early stop if KL too big
+            # Early stop PPO epoch loop if KL too big
             if args.target_kl > 0 and (np.mean(approx_kls) > args.target_kl):
                 break
 
@@ -310,10 +345,11 @@ def main():
             f"eps_done={episode_count} fps={fps:.1f}"
         )
 
-        # ===== Validation + Best model saving =====
+        # ===== Validation + Best model saving + Early stop =====
         if args.val_every_rollouts > 0 and (rollout_idx % args.val_every_rollouts == 0):
             model.eval()
-            val = validation_run_ppo(env_val, model, episodes=20, device=str(device), greedy=True)
+            # NOTE: your validation_run_ppo unwraps envs internally (good).
+            val = validation_run_ppo(env_val, model, episodes=20, device=str(device), greedy=False)
             model.train()
 
             for k, v in val.items():
@@ -321,13 +357,19 @@ def main():
 
             print(f"  [val] {val}")
 
-            # Save best model by validation episode_reward
             cur_val = float(val.get("episode_reward", -1e9))
-            if cur_val > best_val_reward:
+            if cur_val > best_val_reward + args.min_delta:
                 best_val_reward = cur_val
+                no_improve = 0
                 best_path = os.path.join("saves", f"ppo_{args.run}_best.pt")
                 torch.save(model.state_dict(), best_path)
                 print(f"  [best] new best val episode_reward={best_val_reward:.4f} -> {best_path}")
+            else:
+                no_improve += 1
+
+            if args.early_stop and (rollout_idx >= args.min_rollouts) and (no_improve >= args.patience):
+                print(f"[PPO] early stopping: no val improvement for {no_improve} validations.")
+                break
 
         # ===== Save periodic checkpoint =====
         if args.save_every_rollouts > 0 and (rollout_idx % args.save_every_rollouts == 0):
@@ -335,7 +377,7 @@ def main():
             torch.save(model.state_dict(), ckpt_path)
             print(f"  [save] {ckpt_path}")
 
-        # Optional stop condition
+        # Hard stop condition
         if args.max_rollouts and rollout_idx >= args.max_rollouts:
             print("[PPO] reached max_rollouts, stopping.")
             break

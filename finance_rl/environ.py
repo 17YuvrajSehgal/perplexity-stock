@@ -27,16 +27,9 @@ class State:
     """
     State encoder for the trading environment.
 
-    Base features (already in your env):
-      - For each of last N bars: relative (high/close - 1), (low/close - 1), (close/prev_close - 1),
-        and optionally relative volume change.
-      - have_position flag
-      - unrealized_return (if holding)
-
-    Optional extra features (recommended for PPO):
-      - volatility estimate over recent returns (std)
-      - time_in_position (normalized)
-      - ATR-like range: mean((high-low)/close) over window
+    IMPORTANT (leakage fix):
+    - Observation at time t is built from current offset t
+    - Action is executed at OPEN(t+1) (next bar), not at CLOSE(t)
     """
 
     def __init__(
@@ -61,7 +54,7 @@ class State:
         self.commission_perc = commission_perc
         self.reset_on_close = reset_on_close
 
-        # Backward-compat: your older logic used reward_on_close True/False
+        # Backward-compat
         self.reward_on_close = reward_on_close
 
         # PPO-friendly explicit reward mode
@@ -69,6 +62,14 @@ class State:
 
         self.volumes = volumes
         self.extra_features = extra_features
+
+        # Will be initialized in reset()
+        self._prices: data.Prices | None = None
+        self._offset: int = 0
+
+        self.have_position: bool = False
+        self.open_price: float = 0.0
+        self.time_in_position: int = 0
 
     def reset(self, prices: data.Prices, offset: int):
         assert isinstance(prices, data.Prices)
@@ -83,10 +84,6 @@ class State:
 
     @property
     def shape(self):
-        # Base:
-        #   if volumes: 4 * bars_count
-        #   else:       3 * bars_count
-        # plus: have_position + unrealized_return
         base = (4 * self.bars_count) if self.volumes else (3 * self.bars_count)
         extras = 3 if self.extra_features else 0  # vol, time_in_pos, atr_like
         return (base + 2 + extras,)
@@ -132,8 +129,8 @@ class State:
         res[shift] = float(self.have_position)
         shift += 1
 
-        # unrealized return (if holding)
-        if not self.have_position or self.open_price == 0.0:
+        # unrealized return (mark-to-market using current close)
+        if (not self.have_position) or (self.open_price == 0.0):
             res[shift] = 0.0
         else:
             res[shift] = (self._cur_close() - self.open_price) / self.open_price
@@ -141,7 +138,7 @@ class State:
 
         # optional extra features
         if self.extra_features:
-            # --- volatility: std of close returns over window ---
+            # volatility: std of close returns over window
             start = max(1, self._offset - (self.bars_count - 1))
             closes = self._prices.close[start:self._offset + 1].astype(np.float32)
             if closes.shape[0] >= 2:
@@ -152,12 +149,12 @@ class State:
             res[shift] = np.clip(vol, 0.0, 1.0)
             shift += 1
 
-            # --- time in position (normalized) ---
+            # time in position (normalized)
             tnorm = float(self.time_in_position) / float(self.bars_count * 10)
             res[shift] = np.clip(tnorm, 0.0, 1.0)
             shift += 1
 
-            # --- ATR-like average range: mean((high-low)/close) ---
+            # ATR-like average range
             start2 = max(0, self._offset - (self.bars_count - 1))
             highs = self._prices.high[start2:self._offset + 1].astype(np.float32)
             lows = self._prices.low[start2:self._offset + 1].astype(np.float32)
@@ -169,64 +166,72 @@ class State:
 
         return res
 
-    def _cur_close(self):
+    def _cur_close(self) -> float:
         return float(self._prices.close[self._offset])
 
     def step(self, action: Actions):
         """
         Returns (reward, done)
+
+        Execution model:
+        - You decide action based on obs at time t
+        - Environment advances to t+1
+        - Execution occurs at OPEN(t+1)
         """
         assert isinstance(action, Actions)
 
         reward = 0.0
         done = False
 
-        close = self._cur_close()
-        prev_close = close  # will be updated after offset++
+        # Prices at time t (bar used to build observation)
+        close_t = self._cur_close()
 
-        # ---- trade logic ----
+        # ---- advance time first: move to t+1 ----
+        self._offset += 1
+
+        # End-of-data safety
+        if self._offset >= self._prices.close.shape[0]:
+            return reward, True
+
+        # Prices at time t+1 (used for execution)
+        open_t1 = float(self._prices.open[self._offset])
+        close_t1 = float(self._prices.close[self._offset])
+
+        # Commission in SAME SCALE as reward:
+        # reward uses 100 * return (percent-points)
+        comm = 100.0 * float(self.commission_perc)
+
+        # Optional: update holding time if already in position
+        if self.have_position:
+            self.time_in_position += 1
+
+        # ---- execute action at open(t+1) ----
         if action == Actions.Buy and not self.have_position:
             self.have_position = True
-            self.open_price = close
+            self.open_price = open_t1
             self.time_in_position = 0
-
-            # commission penalty
-            reward -= self.commission_perc
+            reward -= comm
 
         elif action == Actions.Close and self.have_position:
-            # commission penalty
-            reward -= self.commission_perc
+            reward -= comm
 
-            # realized return on close (classic)
-            if self.reward_mode == "close_pnl" or self.reward_on_close:
+            # realized PnL at open(t+1)
+            if (self.reward_mode == "close_pnl") or self.reward_on_close:
                 if self.open_price != 0.0:
-                    reward += 100.0 * (close - self.open_price) / self.open_price
+                    reward += 100.0 * (open_t1 - self.open_price) / self.open_price
 
             self.have_position = False
             self.open_price = 0.0
             self.time_in_position = 0
-
             done |= self.reset_on_close
 
-        # ---- advance time ----
-        # Move to the next day
-        self._offset += 1
-        prev_close = close
-
-        # If we've moved past the last valid index, end episode safely
-        if self._offset >= self._prices.close.shape[0]:
-            done = True
-            return reward, done
-
-        # Now it's safe to read the new close
-        close = self._cur_close()
-
-        # If next step would go out of bounds, mark done (so next call won't crash)
+        # If next step would go out of bounds, mark done now
         done |= self._offset >= self._prices.close.shape[0] - 1
 
-        # Optional: per-step reward while holding (only if using step-based reward)
-        if self.have_position and not self.reward_on_close:
-            reward += 100.0 * (close - prev_close) / prev_close
+        # Optional per-step reward while holding (step-based mode)
+        if self.have_position and (not self.reward_on_close) and (self.reward_mode != "close_pnl"):
+            if close_t != 0.0:
+                reward += 100.0 * (close_t1 - close_t) / close_t
 
         return reward, done
 
@@ -241,8 +246,6 @@ class State1D(State):
 
     @property
     def shape(self):
-        # channels: price-features + optional volume + 2 position features
-        # We return channels x bars_count
         base_ch = 3 + (1 if self.volumes else 0)
         ch = base_ch + 2
         return (ch, self.bars_count)
@@ -250,7 +253,6 @@ class State1D(State):
     def encode(self):
         res = np.zeros(self.shape, dtype=np.float32)
 
-        # fill time dimension left->right (oldest -> newest)
         t = 0
         for bar_idx in range(-self.bars_count + 1, 1):
             i = self._offset + bar_idx
@@ -278,7 +280,7 @@ class State1D(State):
                 res[ch, t] = np.clip(vol_feat, -5.0, 5.0)
                 ch += 1
 
-            # position features repeat across the time axis (simple trick)
+            # position features repeat across the time axis
             res[ch, t] = float(self.have_position)
             ch += 1
             if self.have_position and self.open_price != 0.0:
@@ -296,7 +298,7 @@ class StocksEnv(gym.Env):
     Gymnasium-compatible trading environment wrapper.
     """
 
-    metadata = {'render.modes': ['human']}
+    metadata = {"render.modes": ["human"]}
 
     def __init__(
         self,
@@ -314,9 +316,10 @@ class StocksEnv(gym.Env):
         self._prices = prices
 
         if state_1d:
-            # keep State1D simpler by default (extra_features ignored)
             self._state = State1D(
-                bars_count, commission, reset_on_close,
+                bars_count,
+                float(commission),
+                reset_on_close,
                 reward_on_close=reward_on_close,
                 volumes=volumes,
                 extra_features=False,
@@ -324,7 +327,9 @@ class StocksEnv(gym.Env):
             )
         else:
             self._state = State(
-                bars_count, commission, reset_on_close,
+                bars_count,
+                float(commission),
+                reset_on_close,
                 reward_on_close=reward_on_close,
                 volumes=volumes,
                 extra_features=extra_features,
@@ -339,6 +344,8 @@ class StocksEnv(gym.Env):
         self.random_ofs_on_reset = random_ofs_on_reset
         self.seed()
 
+        self._instrument = None
+
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
 
@@ -348,6 +355,8 @@ class StocksEnv(gym.Env):
 
         if self.random_ofs_on_reset:
             max_ofs = max(prices.high.shape[0] - bars * 10, bars + 1)
+            # leave room for t+1 execution
+            max_ofs = min(max_ofs, prices.high.shape[0] - 2)
             offset = int(self.np_random.integers(bars, max_ofs))
         else:
             offset = bars
@@ -358,7 +367,11 @@ class StocksEnv(gym.Env):
         return obs, info
 
     def step(self, action_idx):
+        """
+        Gymnasium step: accepts an int action, converts to Actions enum, calls State.step()
+        """
         action = Actions(int(action_idx))
+
         # Save observation BEFORE stepping so we can safely return it on terminal
         obs_before = self._state.encode()
 
@@ -367,13 +380,8 @@ class StocksEnv(gym.Env):
         terminated = bool(done)
         truncated = False
 
-        # If episode ended because we ran out of data, the new offset may be invalid.
-        # In that case, return the last valid observation (obs_before).
-        if terminated:
-            obs = obs_before
-        else:
-            obs = self._state.encode()
-
+        # On terminal, the internal offset might be at boundary; return last valid obs
+        obs = obs_before if terminated else self._state.encode()
         info = {"instrument": self._instrument, "offset": int(self._state._offset)}
         return obs, float(reward), terminated, truncated, info
 
