@@ -11,7 +11,7 @@ import torch.optim as optim
 
 from tensorboardX import SummaryWriter
 
-import models.models as models
+import models as models
 from finance_rl import environ, data, common, validation
 
 BATCH_SIZE = 32

@@ -1,6 +1,5 @@
 # train_model.py (Fix B: no ptan, Gymnasium-native)
 
-import os
 import argparse
 import random
 from collections import deque, namedtuple
@@ -12,7 +11,7 @@ import gymnasium as gym
 from tensorboardX import SummaryWriter
 
 from finance_rl import environ, data_yf as data, common, validation
-from models import models
+import models
 
 # ---------------------------------------------------------
 # Hyperparameters
