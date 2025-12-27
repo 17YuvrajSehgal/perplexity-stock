@@ -188,17 +188,25 @@ class State:
         # ---- advance time first: move to t+1 ----
         self._offset += 1
 
-        # End-of-data safety
+        # Commission in SAME SCALE as reward:
+        # reward uses 100 * return (percent-points), so commission_perc is in percent-points too.
+        # Example: commission_perc=0.1 means 0.1% cost -> subtract 0.1
+        comm = float(self.commission_perc)
+
+        # End-of-data safety (if we ran past the end, liquidate using last close)
         if self._offset >= self._prices.close.shape[0]:
+            if self.have_position and self.open_price != 0.0:
+                exit_price = float(self._prices.close[-1])
+                reward += 100.0 * (exit_price - self.open_price) / self.open_price
+                reward -= comm
+                self.have_position = False
+                self.open_price = 0.0
+                self.time_in_position = 0
             return reward, True
 
         # Prices at time t+1 (used for execution)
         open_t1 = float(self._prices.open[self._offset])
         close_t1 = float(self._prices.close[self._offset])
-
-        # Commission in SAME SCALE as reward:
-        # reward uses 100 * return (percent-points)
-        comm = 100.0 * float(self.commission_perc)
 
         # Optional: update holding time if already in position
         if self.have_position:
@@ -224,13 +232,25 @@ class State:
             self.time_in_position = 0
             done |= self.reset_on_close
 
-        # If next step would go out of bounds, mark done now
-        done |= self._offset >= self._prices.close.shape[0] - 1
-
         # Optional per-step reward while holding (step-based mode)
         if self.have_position and (not self.reward_on_close) and (self.reward_mode != "close_pnl"):
             if close_t != 0.0:
                 reward += 100.0 * (close_t1 - close_t) / close_t
+
+        # ---- termination checks ----
+        done |= self._offset >= self._prices.close.shape[0] - 1
+        if getattr(self, "time_limit", None) is not None:
+            done |= self._offset >= int(self.time_limit)
+
+        # ---- BUG 2 FIX: terminal liquidation (realize PnL if episode ends while holding) ----
+        if done and self.have_position and self.open_price != 0.0:
+            # Close using the same execution convention (OPEN(t+1) for the final step we are at)
+            exit_price = open_t1
+            reward += 100.0 * (exit_price - self.open_price) / self.open_price
+            reward -= comm
+            self.have_position = False
+            self.open_price = 0.0
+            self.time_in_position = 0
 
         return reward, done
 
