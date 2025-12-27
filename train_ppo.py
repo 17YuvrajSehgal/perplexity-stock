@@ -181,6 +181,9 @@ def main():
     parser.add_argument("--min_train", type=int, default=200, help="Min train points per instrument when --split")
     parser.add_argument("--min_val", type=int, default=200, help="Min val points per instrument when --split")
 
+    parser.add_argument("--total_steps", type=int, default=10_000_000,
+                        help="Hard cap on total environment steps (prevents infinite runs).")
+
     args = parser.parse_args()
 
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
@@ -272,7 +275,8 @@ def main():
     # -------------------------
     # Main loop: rollout -> update
     # -------------------------
-    while True:
+    while (global_step < args.total_steps) and (rollout_idx < args.max_rollouts):
+
         rollout_idx += 1
         # IMPORTANT: device should be torch.device, not str
         buf = RolloutBuffer(obs_shape=obs_shape, size=args.rollout_steps, device=device)
@@ -433,6 +437,11 @@ def main():
         if args.max_rollouts and rollout_idx >= args.max_rollouts:
             print("[PPO] reached max_rollouts, stopping.")
             break
+
+    if global_step >= args.total_steps:
+        print(f"[done] reached total_steps={args.total_steps} at rollout={rollout_idx}")
+    elif rollout_idx >= args.max_rollouts:
+        print(f"[done] reached max_rollouts={args.max_rollouts} at step={global_step}")
 
     writer.close()
 

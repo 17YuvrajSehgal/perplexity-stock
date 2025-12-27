@@ -168,91 +168,81 @@ class State:
     def _cur_close(self) -> float:
         return float(self._prices.close[self._offset])
 
-    def step(self, action: Actions):
+    def step(self, action) -> tuple[float, bool]:
         """
-        Returns (reward, done)
-
-        Execution model:
-        - You decide action based on obs at time t
-        - Environment advances to t+1
-        - Execution occurs at OPEN(t+1)
+        Advance one bar and apply action execution at OPEN(t+1).
+        Returns: (reward, done)
         """
-        assert isinstance(action, Actions)
+        assert self._prices is not None, "Call reset() first"
 
-        reward = 0.0
-        done = False
+        # Accept either Actions enum or int
+        try:
+            a = int(action.value)  # Actions enum
+        except AttributeError:
+            a = int(action)  # raw int
 
-        # Prices at time t (bar used to build observation)
-        close_t = self._cur_close()
-
-        # ---- advance time first: move to t+1 ----
+        # Move to t+1 (execution bar)
         self._offset += 1
 
-        # Commission in SAME SCALE as reward:
-        # reward uses 100 * return (percent-points), so commission_perc is in percent-points too.
-        # Example: commission_perc=0.1 means 0.1% cost -> subtract 0.1
-        comm = float(self.commission_perc)
+        # If we stepped beyond available data, terminate cleanly
+        if self._offset >= self._prices.close.shape[0] - 1:
+            return 0.0, True
 
-        # End-of-data safety (if we ran past the end, liquidate using last close)
-        if self._offset >= self._prices.close.shape[0]:
-            if self.have_position and self.open_price != 0.0:
-                exit_price = float(self._prices.close[-1])
-                reward += 100.0 * (exit_price - self.open_price) / self.open_price
-                reward -= comm
+        exec_open = float(self._prices.open[self._offset])
+        exec_close = float(self._prices.close[self._offset])
+
+        reward = 0.0
+        realized_return = 0.0
+
+        fee = float(self.commission_perc)
+
+
+        # 0 = Skip/Hold, 1 = Buy/Open long, 2 = Close
+        if a == Actions.Buy.value:
+            if not self.have_position:
+                self.have_position = True
+                self.open_price = exec_open
+                self.time_in_position = 0
+                if fee > 0:
+                    reward -= 100.0 * fee
+
+        elif a == Actions.Close.value:
+            if self.have_position:
+                if self.open_price > 0:
+                    realized_return = (exec_open - float(self.open_price)) / float(self.open_price)
+
                 self.have_position = False
                 self.open_price = 0.0
                 self.time_in_position = 0
-            return reward, True
 
-        # Prices at time t+1 (used for execution)
-        open_t1 = float(self._prices.open[self._offset])
-        close_t1 = float(self._prices.close[self._offset])
+                if self.reward_mode == "close_pnl":
+                    reward += 100.0 * realized_return
+                    if fee > 0:
+                        reward -= 100.0 * fee
 
-        # Optional: update holding time if already in position
-        if self.have_position:
-            self.time_in_position += 1
+        else:
+            # Hold
+            if self.have_position:
+                self.time_in_position += 1
 
-        # ---- execute action at open(t+1) ----
-        if action == Actions.Buy and not self.have_position:
-            self.have_position = True
-            self.open_price = open_t1
-            self.time_in_position = 0
-            reward -= comm
-
-        elif action == Actions.Close and self.have_position:
-            reward -= comm
-
-            # realized PnL at open(t+1)
-            if (self.reward_mode == "close_pnl") or self.reward_on_close:
-                if self.open_price != 0.0:
-                    reward += 100.0 * (open_t1 - self.open_price) / self.open_price
+        # Terminal liquidation at end of series
+        done = (self._offset >= self._prices.close.shape[0] - 2)
+        if done and self.have_position:
+            if self.open_price > 0:
+                liq_ret = (exec_close - float(self.open_price)) / float(self.open_price)
+            else:
+                liq_ret = 0.0
 
             self.have_position = False
             self.open_price = 0.0
             self.time_in_position = 0
-            done |= self.reset_on_close
 
-        # Optional per-step reward while holding (step-based mode)
-        if self.have_position and (not self.reward_on_close) and (self.reward_mode != "close_pnl"):
-            if close_t != 0.0:
-                reward += 100.0 * (close_t1 - close_t) / close_t
+            if self.reward_mode == "close_pnl":
+                reward += 100.0 * liq_ret
+                if fee > 0:
+                    reward -= 100.0 * fee
 
-        # ---- termination checks ----
-        done |= self._offset >= self._prices.close.shape[0] - 1
-        if getattr(self, "time_limit", None) is not None:
-            done |= self._offset >= int(self.time_limit)
-
-        # ---- BUG 2 FIX: terminal liquidation (realize PnL if episode ends while holding) ----
-        if done and self.have_position and self.open_price != 0.0:
-            # Close using the same execution convention (OPEN(t+1) for the final step we are at)
-            exit_price = open_t1
-            reward += 100.0 * (exit_price - self.open_price) / self.open_price
-            reward -= comm
-            self.have_position = False
-            self.open_price = 0.0
-            self.time_in_position = 0
-
-        return reward, done
+        return float(reward), bool(done)
 
 
 class State1D(State):
