@@ -10,7 +10,14 @@ from . import data_yf as data
 DEFAULT_BARS_COUNT = 10
 
 # Transaction cost applied when buying or closing a position
-DEFAULT_COMMISSION_PERC = 0.1
+DEFAULT_COMMISSION_PERC = 0.001  # 0.1% per trade side (10 bps)
+
+# Penalty per step while holding a position (discourages "hold forever")
+DEFAULT_HOLD_PENALTY_PERC = 0.00002  # 0.002% per step (tune: 1e-5 to 1e-4)
+
+# Optional cap on holding length (None disables)
+DEFAULT_MAX_HOLD_STEPS = 250
+
 
 
 class Actions(enum.Enum):
@@ -32,14 +39,16 @@ class State:
     """
 
     def __init__(
-        self,
-        bars_count: int,
-        commission_perc: float,
-        reset_on_close: bool,
-        reward_on_close: bool = True,
-        volumes: bool = True,
-        extra_features: bool = True,
-        reward_mode: str = "close_pnl",  # "close_pnl" or "step_logret"
+            self,
+            bars_count: int,
+            commission_perc: float,
+            reset_on_close: bool,
+            reward_on_close: bool = True,
+            volumes: bool = True,
+            extra_features: bool = True,
+            reward_mode: str = "close_pnl",
+            hold_penalty_per_step: float = DEFAULT_HOLD_PENALTY_PERC,
+            max_hold_steps: int | None = DEFAULT_MAX_HOLD_STEPS,
     ):
         assert isinstance(bars_count, int) and bars_count > 0
         assert isinstance(commission_perc, float) and commission_perc >= 0.0
@@ -51,6 +60,8 @@ class State:
 
         self.bars_count = bars_count
         self.commission_perc = commission_perc
+        self.hold_penalty_per_step = float(hold_penalty_per_step)
+        self.max_hold_steps = max_hold_steps if (max_hold_steps is None) else int(max_hold_steps)
         self.reset_on_close = reset_on_close
 
         # Backward-compat
@@ -194,8 +205,19 @@ class State:
         reward = 0.0
         realized_return = 0.0
 
+        # Commission and holding penalty (both are in return units, scaled by 100 later)
         fee = float(self.commission_perc)
+        hold_fee = float(self.hold_penalty_per_step)
 
+        # ---- Per-step holding penalty (discourage "hold forever") ----
+        if self.have_position and hold_fee > 0.0:
+            reward -= 100.0 * hold_fee
+
+        # ---- Optional forced close if holding too long ----
+        forced_close = False
+        if self.have_position and (self.max_hold_steps is not None) and (self.time_in_position >= self.max_hold_steps):
+            forced_close = True
+            a = Actions.Close.value  # override action
 
         # 0 = Skip/Hold, 1 = Buy/Open long, 2 = Close
         if a == Actions.Buy.value:
@@ -203,6 +225,8 @@ class State:
                 self.have_position = True
                 self.open_price = exec_open
                 self.time_in_position = 0
+
+                # entry commission
                 if fee > 0:
                     reward -= 100.0 * fee
 
@@ -217,8 +241,10 @@ class State:
 
                 if self.reward_mode == "close_pnl":
                     reward += 100.0 * realized_return
-                    if fee > 0:
-                        reward -= 100.0 * fee
+
+                # exit commission (always apply on exit)
+                if fee > 0:
+                    reward -= 100.0 * fee
 
         else:
             # Hold
@@ -239,8 +265,10 @@ class State:
 
             if self.reward_mode == "close_pnl":
                 reward += 100.0 * liq_ret
-                if fee > 0:
-                    reward -= 100.0 * fee
+
+            # exit commission on liquidation
+            if fee > 0:
+                reward -= 100.0 * fee
 
         return float(reward), bool(done)
 
@@ -310,18 +338,21 @@ class StocksEnv(gym.Env):
     metadata = {"render.modes": ["human"]}
 
     def __init__(
-        self,
-        prices,
-        bars_count=DEFAULT_BARS_COUNT,
-        commission=DEFAULT_COMMISSION_PERC,
-        reset_on_close=True,
-        state_1d=False,
-        random_ofs_on_reset=True,
-        reward_on_close=False,
-        volumes=True,
-        extra_features=True,
-        reward_mode="close_pnl",  # "close_pnl" or "step_logret"
+            self,
+            prices,
+            bars_count=DEFAULT_BARS_COUNT,
+            commission=DEFAULT_COMMISSION_PERC,
+            reset_on_close=True,
+            state_1d=False,
+            random_ofs_on_reset=True,
+            reward_on_close=False,
+            volumes=True,
+            extra_features=True,
+            reward_mode="close_pnl",
+            hold_penalty_per_step=DEFAULT_HOLD_PENALTY_PERC,
+            max_hold_steps=DEFAULT_MAX_HOLD_STEPS,
     ):
+
         self._prices = prices
 
         if state_1d:
@@ -333,6 +364,8 @@ class StocksEnv(gym.Env):
                 volumes=volumes,
                 extra_features=False,
                 reward_mode=reward_mode,
+                hold_penalty_per_step=float(hold_penalty_per_step),
+                max_hold_steps=max_hold_steps,
             )
         else:
             self._state = State(
@@ -343,6 +376,8 @@ class StocksEnv(gym.Env):
                 volumes=volumes,
                 extra_features=extra_features,
                 reward_mode=reward_mode,
+                hold_penalty_per_step=float(hold_penalty_per_step),
+                max_hold_steps=max_hold_steps,
             )
 
         self.action_space = gym.spaces.Discrete(len(Actions))
