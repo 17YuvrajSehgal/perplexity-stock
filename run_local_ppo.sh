@@ -42,6 +42,7 @@ python -u train_ppo.py \
   -r "$RUN_NAME" \
   --data "$DATA_DIR" \
   --cuda \
+  --split \
   --train_ratio 0.80 \
   --min_train 200 \
   --min_val 200 \
