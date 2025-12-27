@@ -401,7 +401,7 @@ def main():
         # ===== Validation + Best model saving + Early stop =====
         if args.val_every_rollouts > 0 and (rollout_idx % args.val_every_rollouts == 0):
             model.eval()
-            val = validation_run_ppo(env_val, model, episodes=20, device=str(device), greedy=False)
+            val = validation_run_ppo(env_val, model, episodes=20, device=str(device), greedy=True)
             model.train()
 
             for k, v in val.items():

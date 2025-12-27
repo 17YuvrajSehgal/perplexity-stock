@@ -4,14 +4,13 @@ from gymnasium.utils import seeding
 import enum
 import numpy as np
 
-import config
 from . import data_yf as data
 
 # Default number of past days ("bars") the agent can see
-DEFAULT_BARS_COUNT = config.EnvConfig.DEFAULT_BARS_COUNT
+DEFAULT_BARS_COUNT = 10
 
 # Transaction cost applied when buying or closing a position
-DEFAULT_COMMISSION_PERC = config.EnvConfig.DEFAULT_COMMISSION_PERC
+DEFAULT_COMMISSION_PERC = 0.1
 
 
 class Actions(enum.Enum):
