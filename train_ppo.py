@@ -5,7 +5,8 @@ PPO training script for your finance_rl trading environment.
 Key improvements in this version
 --------------------------------
 ✅ Separate train vs validation env instances (no shared state)
-✅ Training terminates by default (finite --max_rollouts)
+✅ Optional chronological train/val split (no leakage): --train_ratio / --min_train / --min_val
+✅ Training terminates by default (finite --max_rollouts, default=500)
 ✅ Optional early stopping based on validation episode_reward (patience + min_delta)
 ✅ Still saves BEST model by validation episode_reward: saves/ppo_<run>_best.pt
 ✅ Rollout reward heartbeat + full TensorBoard logs as before
@@ -18,8 +19,9 @@ python -u train_ppo.py -r ppo_aapl --data yf_data
 GPU:
 python -u train_ppo.py -r ppo_aapl --data yf_data --cuda
 
-Recommended (finite + early-stop):
+Recommended (finite + early-stop + split):
 python -u train_ppo.py -r ppo_aapl_fixed --data yf_data --cuda \
+  --train_ratio 0.8 --min_train 200 --min_val 200 \
   --max_rollouts 500 --early_stop --patience 20 --min_rollouts 50 --val_every_rollouts 10
 """
 from __future__ import annotations
@@ -27,6 +29,8 @@ from __future__ import annotations
 import os
 import time
 import argparse
+from typing import Dict, Tuple
+
 import numpy as np
 import gymnasium as gym
 
@@ -103,6 +107,30 @@ def build_env(
     )
 
 
+def maybe_split_prices(
+    prices_all: Dict[str, data_yf.Prices],
+    *,
+    do_split: bool,
+    train_ratio: float,
+    min_train: int,
+    min_val: int,
+) -> Tuple[Dict[str, data_yf.Prices], Dict[str, data_yf.Prices]]:
+    """
+    If do_split is True, split each instrument chronologically using data_yf.split_many_by_ratio.
+    Otherwise, return the same dict for both train and val (in-sample validation).
+    """
+    if not do_split:
+        return prices_all, prices_all
+
+    prices_train, prices_val = data_yf.split_many_by_ratio(
+        prices_all,
+        train_ratio=train_ratio,
+        min_train=min_train,
+        min_val=min_val,
+    )
+    return prices_train, prices_val
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-r", "--run", required=True, help="Run name for logs/checkpoints")
@@ -147,6 +175,12 @@ def main():
     parser.add_argument("--min_rollouts", type=int, default=50, help="Do not early-stop before this many rollouts")
     parser.add_argument("--min_delta", type=float, default=1e-3, help="Min improvement to reset patience")
 
+    # NEW: Data split options (no leakage)
+    parser.add_argument("--split", action="store_true", help="Chronological train/val split (recommended)")
+    parser.add_argument("--train_ratio", type=float, default=0.8, help="Train fraction when --split is enabled")
+    parser.add_argument("--min_train", type=int, default=200, help="Min train points per instrument when --split")
+    parser.add_argument("--min_val", type=int, default=200, help="Min val points per instrument when --split")
+
     args = parser.parse_args()
 
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
@@ -157,15 +191,28 @@ def main():
     os.makedirs("logs", exist_ok=True)
 
     # -------------------------
-    # Load prices + build envs
+    # Load prices + (optional) split
     # -------------------------
-    prices = data_yf.load_many_from_dir(args.data)
+    prices_all = data_yf.load_many_from_dir(args.data)
+
+    prices_train, prices_val = maybe_split_prices(
+        prices_all,
+        do_split=args.split,
+        train_ratio=args.train_ratio,
+        min_train=args.min_train,
+        min_val=args.min_val,
+    )
+
+    if args.split:
+        print(f"[data] instruments: all={len(prices_all)} train={len(prices_train)} val={len(prices_val)}")
+    else:
+        print(f"[data] instruments: all={len(prices_all)} (no split; validation is in-sample)")
 
     extra_features = (not args.no_extra)
 
     # Separate env instances to avoid state coupling between train and validation
     env_train_base = build_env(
-        prices,
+        prices_train,
         bars=args.bars,
         volumes=args.volumes,
         extra_features=extra_features,
@@ -176,7 +223,7 @@ def main():
     env_train = gym.wrappers.TimeLimit(env_train_base, max_episode_steps=args.time_limit)
 
     env_val = build_env(
-        prices,
+        prices_val,
         bars=args.bars,
         volumes=args.volumes,
         extra_features=extra_features,
@@ -218,6 +265,7 @@ def main():
 
     print(f"[PPO] device={device} obs_shape={obs_shape} actions={n_actions}")
     print(f"[PPO] reward_mode={args.reward_mode} volumes={args.volumes} extra_features={extra_features}")
+    print(f"[PPO] split={args.split} max_rollouts={args.max_rollouts} early_stop={args.early_stop}")
     print(f"[PPO] logs: runs/  checkpoints: saves/")
     print("------------------------------------------------------------")
 
@@ -226,7 +274,8 @@ def main():
     # -------------------------
     while True:
         rollout_idx += 1
-        buf = RolloutBuffer(obs_shape=obs_shape, size=args.rollout_steps, device=str(device))
+        # IMPORTANT: device should be torch.device, not str
+        buf = RolloutBuffer(obs_shape=obs_shape, size=args.rollout_steps, device=device)
 
         # ===== Collect rollout =====
         for _ in range(args.rollout_steps):
@@ -319,36 +368,39 @@ def main():
                 clipfracs.append(clipfrac)
 
             # Early stop PPO epoch loop if KL too big
-            if args.target_kl > 0 and (np.mean(approx_kls) > args.target_kl):
+            if args.target_kl > 0 and (len(approx_kls) > 0) and (np.mean(approx_kls) > args.target_kl):
                 break
 
         # ===== Logging =====
         fps = global_step / max(1e-9, (time.time() - t0))
-        writer.add_scalar("ppo/policy_loss", float(np.mean(policy_losses)), global_step)
-        writer.add_scalar("ppo/value_loss", float(np.mean(value_losses)), global_step)
-        writer.add_scalar("ppo/entropy", float(np.mean(entropies)), global_step)
-        writer.add_scalar("ppo/approx_kl", float(np.mean(approx_kls)), global_step)
-        writer.add_scalar("ppo/clipfrac", float(np.mean(clipfracs)), global_step)
+        writer.add_scalar("ppo/policy_loss", float(np.mean(policy_losses) if policy_losses else 0.0), global_step)
+        writer.add_scalar("ppo/value_loss", float(np.mean(value_losses) if value_losses else 0.0), global_step)
+        writer.add_scalar("ppo/entropy", float(np.mean(entropies) if entropies else 0.0), global_step)
+        writer.add_scalar("ppo/approx_kl", float(np.mean(approx_kls) if approx_kls else 0.0), global_step)
+        writer.add_scalar("ppo/clipfrac", float(np.mean(clipfracs) if clipfracs else 0.0), global_step)
         writer.add_scalar("train/fps", float(fps), global_step)
         writer.add_scalar("train/episodes", float(episode_count), global_step)
 
         # Value function explained variance
-        ev = explained_variance(buf.values, buf.returns)
+        # Ensure numpy arrays
+        ev = explained_variance(np.asarray(buf.values), np.asarray(buf.returns))
         writer.add_scalar("ppo/explained_variance", ev, global_step)
 
         # Console heartbeat every rollout
         print(
             f"[rollout {rollout_idx}] step={global_step} "
             f"roll_sum={roll_sum:.3f} roll_mean={roll_mean:.5f} "
-            f"pi_loss={np.mean(policy_losses):.4f} v_loss={np.mean(value_losses):.4f} "
-            f"ent={np.mean(entropies):.3f} kl={np.mean(approx_kls):.4f} clip={np.mean(clipfracs):.3f} "
+            f"pi_loss={np.mean(policy_losses) if policy_losses else 0.0:.4f} "
+            f"v_loss={np.mean(value_losses) if value_losses else 0.0:.4f} "
+            f"ent={np.mean(entropies) if entropies else 0.0:.3f} "
+            f"kl={np.mean(approx_kls) if approx_kls else 0.0:.4f} "
+            f"clip={np.mean(clipfracs) if clipfracs else 0.0:.3f} "
             f"eps_done={episode_count} fps={fps:.1f}"
         )
 
         # ===== Validation + Best model saving + Early stop =====
         if args.val_every_rollouts > 0 and (rollout_idx % args.val_every_rollouts == 0):
             model.eval()
-            # NOTE: your validation_run_ppo unwraps envs internally (good).
             val = validation_run_ppo(env_val, model, episodes=20, device=str(device), greedy=False)
             model.train()
 
