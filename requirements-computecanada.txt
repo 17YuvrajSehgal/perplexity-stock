@@ -55,3 +55,4 @@ urllib3==2.6.1
 websockets==15.0.1+computecanada
 Werkzeug==3.1.4
 yfinance==0.2.66
+tensorboardx
