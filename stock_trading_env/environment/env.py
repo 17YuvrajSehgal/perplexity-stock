@@ -25,6 +25,16 @@ DEFAULT_HOLD_PENALTY_PERC = 0.00002  # 0.002% per step (tune: 1e-5 to 1e-4)
 # Optional cap on holding length (None disables)
 DEFAULT_MAX_HOLD_STEPS = 250
 
+# ===== Reason-to-close shaping defaults (OFF by default) =====
+# Penalize holding unrealized losses (scaled by magnitude of negative unrealized return)
+DEFAULT_UNREALIZED_LOSS_PENALTY_PER_STEP = 0.0
+# Bonus for closing profitable trades (scaled by realized return)
+DEFAULT_CLOSE_PROFIT_BONUS = 0.0
+# Penalize volatility while holding (scaled by recent realized vol)
+DEFAULT_UNREALIZED_VOL_PENALTY_PER_STEP = 0.0
+# Lookback window for vol penalty
+DEFAULT_VOL_LOOKBACK = 20
+
 
 class Actions(enum.Enum):
     """
@@ -45,16 +55,21 @@ class State:
     """
 
     def __init__(
-            self,
-            bars_count: int,
-            commission_perc: float,
-            reset_on_close: bool,
-            reward_on_close: bool = True,
-            volumes: bool = True,
-            extra_features: bool = True,
-            reward_mode: str = "close_pnl",
-            hold_penalty_per_step: float = DEFAULT_HOLD_PENALTY_PERC,
-            max_hold_steps: Optional[int] = DEFAULT_MAX_HOLD_STEPS,
+        self,
+        bars_count: int,
+        commission_perc: float,
+        reset_on_close: bool,
+        reward_on_close: bool = True,
+        volumes: bool = True,
+        extra_features: bool = True,
+        reward_mode: str = "close_pnl",
+        hold_penalty_per_step: float = DEFAULT_HOLD_PENALTY_PERC,
+        max_hold_steps: Optional[int] = DEFAULT_MAX_HOLD_STEPS,
+        # ===== Reason-to-close shaping (optional) =====
+        unrealized_loss_penalty_per_step: float = DEFAULT_UNREALIZED_LOSS_PENALTY_PER_STEP,
+        close_profit_bonus: float = DEFAULT_CLOSE_PROFIT_BONUS,
+        unrealized_vol_penalty_per_step: float = DEFAULT_UNREALIZED_VOL_PENALTY_PER_STEP,
+        vol_lookback: int = DEFAULT_VOL_LOOKBACK,
     ):
         assert isinstance(bars_count, int) and bars_count > 0
         assert isinstance(commission_perc, float) and commission_perc >= 0.0
@@ -78,6 +93,12 @@ class State:
 
         self.volumes = volumes
         self.extra_features = extra_features
+
+        # Reason-to-close params
+        self.unrealized_loss_penalty_per_step = float(unrealized_loss_penalty_per_step)
+        self.close_profit_bonus = float(close_profit_bonus)
+        self.unrealized_vol_penalty_per_step = float(unrealized_vol_penalty_per_step)
+        self.vol_lookback = int(vol_lookback)
 
         # Will be initialized in reset()
         self._prices: Optional[Prices] = None
@@ -194,6 +215,10 @@ class State:
           - Hold penalty applies ONLY on true Hold steps (Skip while in position),
             NOT on Close steps and NOT on forced-close steps.
           - Forced close triggers when you've already held max_hold_steps steps.
+          - Optional shaping:
+              * penalize holding unrealized losses
+              * bonus for closing profitable trades
+              * penalize volatility while holding
         """
         assert self._prices is not None, "Call reset() first"
 
@@ -217,15 +242,32 @@ class State:
         fee = float(self.commission_perc)
         hold_fee = float(self.hold_penalty_per_step)
 
+        # --- Shaping helpers (computed once per step) ---
+        unrealized_ret = 0.0
+        if self.have_position and self.open_price > 0.0:
+            # mark-to-market at exec_open (consistent with execution-at-open)
+            unrealized_ret = (exec_open - float(self.open_price)) / float(self.open_price)
+
+        vol = 0.0
+        if self.unrealized_vol_penalty_per_step > 0.0:
+            end = self._offset
+            start = max(1, end - int(self.vol_lookback))
+            window = self._prices.close[start:end + 1].astype(np.float32)
+            if window.shape[0] >= 3:
+                rets = window[1:] / window[:-1] - 1.0
+                vol = float(np.std(rets))
+
         # ---- Optional forced close if holding too long ----
         # Convention: time_in_position counts number of HOLD steps taken since entry.
         # If it already reached max_hold_steps, you must close now.
+        forced_close = False
         if (
-                self.have_position
-                and (self.max_hold_steps is not None)
-                and (self.time_in_position >= self.max_hold_steps)
+            self.have_position
+            and (self.max_hold_steps is not None)
+            and (self.time_in_position >= self.max_hold_steps)
         ):
             a = Actions.Close.value  # override action to close
+            forced_close = True
 
         # 0 = Skip/Hold, 1 = Buy/Open long, 2 = Close
         if a == Actions.Buy.value:
@@ -253,7 +295,11 @@ class State:
                 if self.reward_mode == "close_pnl":
                     reward += 100.0 * realized_return
 
-                # exit commission
+                # bonus for closing profitable trades (encourages intentional exits)
+                if self.close_profit_bonus > 0.0 and realized_return > 0.0:
+                    reward += 100.0 * self.close_profit_bonus * realized_return
+
+                # exit commission (also applies to forced close)
                 if fee > 0.0:
                     reward -= 100.0 * fee
 
@@ -261,9 +307,18 @@ class State:
             # Hold (Skip)
             if self.have_position:
                 self.time_in_position += 1
+
                 # apply hold penalty ONLY for holding (not for close/buy)
                 if hold_fee > 0.0:
                     reward -= 100.0 * hold_fee
+
+                # penalize holding unrealized losses (scaled by loss magnitude)
+                if self.unrealized_loss_penalty_per_step > 0.0 and unrealized_ret < 0.0:
+                    reward -= 100.0 * self.unrealized_loss_penalty_per_step * (-unrealized_ret)
+
+                # penalize volatility while holding (optional)
+                if self.unrealized_vol_penalty_per_step > 0.0 and vol > 0.0:
+                    reward -= 100.0 * self.unrealized_vol_penalty_per_step * vol
 
         # Terminal liquidation at end of series
         done = (self._offset >= self._prices.close.shape[0] - 2)
@@ -352,19 +407,24 @@ class StocksEnv(gym.Env):
     metadata = {"render.modes": ["human"]}
 
     def __init__(
-            self,
-            prices,
-            bars_count=DEFAULT_BARS_COUNT,
-            commission=DEFAULT_COMMISSION_PERC,
-            reset_on_close=True,
-            state_1d=False,
-            random_ofs_on_reset=True,
-            reward_on_close=False,
-            volumes=True,
-            extra_features=True,
-            reward_mode="close_pnl",
-            hold_penalty_per_step=DEFAULT_HOLD_PENALTY_PERC,
-            max_hold_steps=DEFAULT_MAX_HOLD_STEPS,
+        self,
+        prices,
+        bars_count=DEFAULT_BARS_COUNT,
+        commission=DEFAULT_COMMISSION_PERC,
+        reset_on_close=True,
+        state_1d=False,
+        random_ofs_on_reset=True,
+        reward_on_close=False,
+        volumes=True,
+        extra_features=True,
+        reward_mode="close_pnl",
+        hold_penalty_per_step=DEFAULT_HOLD_PENALTY_PERC,
+        max_hold_steps=DEFAULT_MAX_HOLD_STEPS,
+        # ===== Reason-to-close shaping kwargs (optional) =====
+        unrealized_loss_penalty_per_step=DEFAULT_UNREALIZED_LOSS_PENALTY_PER_STEP,
+        close_profit_bonus=DEFAULT_CLOSE_PROFIT_BONUS,
+        unrealized_vol_penalty_per_step=DEFAULT_UNREALIZED_VOL_PENALTY_PER_STEP,
+        vol_lookback=DEFAULT_VOL_LOOKBACK,
     ):
 
         self._prices = prices
@@ -380,6 +440,10 @@ class StocksEnv(gym.Env):
                 reward_mode=reward_mode,
                 hold_penalty_per_step=float(hold_penalty_per_step),
                 max_hold_steps=max_hold_steps,
+                unrealized_loss_penalty_per_step=float(unrealized_loss_penalty_per_step),
+                close_profit_bonus=float(close_profit_bonus),
+                unrealized_vol_penalty_per_step=float(unrealized_vol_penalty_per_step),
+                vol_lookback=int(vol_lookback),
             )
         else:
             self._state = State(
@@ -392,6 +456,10 @@ class StocksEnv(gym.Env):
                 reward_mode=reward_mode,
                 hold_penalty_per_step=float(hold_penalty_per_step),
                 max_hold_steps=max_hold_steps,
+                unrealized_loss_penalty_per_step=float(unrealized_loss_penalty_per_step),
+                close_profit_bonus=float(close_profit_bonus),
+                unrealized_vol_penalty_per_step=float(unrealized_vol_penalty_per_step),
+                vol_lookback=int(vol_lookback),
             )
 
         self.action_space = gym.spaces.Discrete(len(Actions))
@@ -453,4 +521,3 @@ class StocksEnv(gym.Env):
         from stock_trading_env.data import load_many_from_dir
         prices = load_many_from_dir(data_dir)
         return cls(prices, **kwargs)
-
