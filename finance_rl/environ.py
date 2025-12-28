@@ -179,18 +179,24 @@ class State:
     def _cur_close(self) -> float:
         return float(self._prices.close[self._offset])
 
+    # --- DROP-IN replacement for State.step() ---
     def step(self, action) -> tuple[float, bool]:
         """
         Advance one bar and apply action execution at OPEN(t+1).
         Returns: (reward, done)
+
+        Updated logic:
+          - Hold penalty applies ONLY on true Hold steps (Skip while in position),
+            NOT on Close steps and NOT on forced-close steps.
+          - Forced close triggers when you've already held max_hold_steps steps.
         """
         assert self._prices is not None, "Call reset() first"
 
         # Accept either Actions enum or int
         try:
-            a = int(action.value)  # Actions enum
+            a = int(action.value)
         except AttributeError:
-            a = int(action)  # raw int
+            a = int(action)
 
         # Move to t+1 (execution bar)
         self._offset += 1
@@ -203,21 +209,18 @@ class State:
         exec_close = float(self._prices.close[self._offset])
 
         reward = 0.0
-        realized_return = 0.0
-
-        # Commission and holding penalty (both are in return units, scaled by 100 later)
         fee = float(self.commission_perc)
         hold_fee = float(self.hold_penalty_per_step)
 
-        # ---- Per-step holding penalty (discourage "hold forever") ----
-        if self.have_position and hold_fee > 0.0:
-            reward -= 100.0 * hold_fee
-
         # ---- Optional forced close if holding too long ----
-        forced_close = False
-        if self.have_position and (self.max_hold_steps is not None) and (self.time_in_position >= self.max_hold_steps):
-            forced_close = True
-            a = Actions.Close.value  # override action
+        # Convention: time_in_position counts number of HOLD steps taken since entry.
+        # If it already reached max_hold_steps, you must close now.
+        if (
+                self.have_position
+                and (self.max_hold_steps is not None)
+                and (self.time_in_position >= self.max_hold_steps)
+        ):
+            a = Actions.Close.value  # override action to close
 
         # 0 = Skip/Hold, 1 = Buy/Open long, 2 = Close
         if a == Actions.Buy.value:
@@ -227,13 +230,16 @@ class State:
                 self.time_in_position = 0
 
                 # entry commission
-                if fee > 0:
+                if fee > 0.0:
                     reward -= 100.0 * fee
 
         elif a == Actions.Close.value:
             if self.have_position:
-                if self.open_price > 0:
+                # realized return at exec_open (next bar open)
+                if self.open_price > 0.0:
                     realized_return = (exec_open - float(self.open_price)) / float(self.open_price)
+                else:
+                    realized_return = 0.0
 
                 self.have_position = False
                 self.open_price = 0.0
@@ -242,19 +248,22 @@ class State:
                 if self.reward_mode == "close_pnl":
                     reward += 100.0 * realized_return
 
-                # exit commission (always apply on exit)
-                if fee > 0:
+                # exit commission
+                if fee > 0.0:
                     reward -= 100.0 * fee
 
         else:
-            # Hold
+            # Hold (Skip)
             if self.have_position:
                 self.time_in_position += 1
+                # apply hold penalty ONLY for holding (not for close/buy)
+                if hold_fee > 0.0:
+                    reward -= 100.0 * hold_fee
 
         # Terminal liquidation at end of series
         done = (self._offset >= self._prices.close.shape[0] - 2)
         if done and self.have_position:
-            if self.open_price > 0:
+            if self.open_price > 0.0:
                 liq_ret = (exec_close - float(self.open_price)) / float(self.open_price)
             else:
                 liq_ret = 0.0
@@ -267,7 +276,7 @@ class State:
                 reward += 100.0 * liq_ret
 
             # exit commission on liquidation
-            if fee > 0:
+            if fee > 0.0:
                 reward -= 100.0 * fee
 
         return float(reward), bool(done)

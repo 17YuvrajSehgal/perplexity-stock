@@ -1,29 +1,3 @@
-# train_ppo.py
-"""
-PPO training script for your finance_rl trading environment.
-
-Key improvements in this version
---------------------------------
-✅ Separate train vs validation env instances (no shared state)
-✅ Optional chronological train/val split (no leakage): --train_ratio / --min_train / --min_val
-✅ Training terminates by default (finite --max_rollouts, default=500)
-✅ Optional early stopping based on validation episode_reward (patience + min_delta)
-✅ Still saves BEST model by validation episode_reward: saves/ppo_<run>_best.pt
-✅ Rollout reward heartbeat + full TensorBoard logs as before
-
-Usage
------
-CPU:
-python -u train_ppo.py -r ppo_aapl --data yf_data
-
-GPU:
-python -u train_ppo.py -r ppo_aapl --data yf_data --cuda
-
-Recommended (finite + early-stop + split):
-python -u train_ppo.py -r ppo_aapl_fixed --data yf_data --cuda \
-  --train_ratio 0.8 --min_train 200 --min_val 200 \
-  --max_rollouts 500 --early_stop --patience 20 --min_rollouts 50 --val_every_rollouts 10
-"""
 from __future__ import annotations
 
 import os
@@ -369,6 +343,7 @@ def main():
                 value_losses.append(float(loss_v.item()))
                 entropies.append(float(entropy.item()))
                 approx_kls.append(approx_kl)
+                clipfracs.append(clipfrac)
                 clipfracs.append(clipfrac)
 
             # Early stop PPO epoch loop if KL too big
