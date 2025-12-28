@@ -1,3 +1,4 @@
+# train_ppo.py  (FULL REPLACEMENT)
 from __future__ import annotations
 
 import os
@@ -38,7 +39,7 @@ def explained_variance(y_pred: np.ndarray, y_true: np.ndarray) -> float:
 
 
 @torch.no_grad()
-def policy_act(model, obs, device, greedy: bool = False):
+def policy_act(model, obs, device: torch.device, greedy: bool = False):
     """
     Sample (or greedy-select) action from current policy.
     Returns: action(int), logprob(float), value(float)
@@ -155,8 +156,12 @@ def main():
     parser.add_argument("--min_train", type=int, default=200, help="Min train points per instrument when --split")
     parser.add_argument("--min_val", type=int, default=200, help="Min val points per instrument when --split")
 
-    parser.add_argument("--total_steps", type=int, default=10_000_000,
-                        help="Hard cap on total environment steps (prevents infinite runs).")
+    parser.add_argument(
+        "--total_steps",
+        type=int,
+        default=10_000_000,
+        help="Hard cap on total environment steps (prevents infinite runs).",
+    )
 
     args = parser.parse_args()
 
@@ -252,7 +257,6 @@ def main():
     while (global_step < args.total_steps) and (rollout_idx < args.max_rollouts):
 
         rollout_idx += 1
-        # IMPORTANT: device should be torch.device, not str
         buf = RolloutBuffer(obs_shape=obs_shape, size=args.rollout_steps, device=device)
 
         # ===== Collect rollout =====
@@ -262,23 +266,27 @@ def main():
             action, logprob, value = policy_act(model, obs, device=device, greedy=False)
 
             next_obs, reward, terminated, truncated, info = env_train.step(action)
-            done = bool(terminated or truncated)
+
+            # IMPORTANT:
+            # - episode_done: when to reset env + log episode stats
+            # - buf_done: for GAE masking (truncate is NOT a true terminal)
+            episode_done = bool(terminated or truncated)
+            buf_done = bool(terminated)
 
             buf.add(
                 obs=obs,
                 action=action,
                 reward=float(reward),
-                done=done,
+                done=buf_done,  # <-- FIX: do not mark truncation as terminal for GAE
                 value=value,
                 logprob=logprob,
             )
 
-            # Episode stats
             episode_reward += float(reward)
             episode_steps += 1
             obs = next_obs
 
-            if done:
+            if episode_done:
                 episode_count += 1
                 writer.add_scalar("train/episode_reward", episode_reward, global_step)
                 writer.add_scalar("train/episode_steps", episode_steps, global_step)
@@ -286,6 +294,9 @@ def main():
                 obs, info = env_train.reset()
                 episode_reward = 0.0
                 episode_steps = 0
+
+            if global_step >= args.total_steps:
+                break
 
         # Rollout reward heartbeat
         roll_sum = float(buf.rewards.sum())
@@ -302,11 +313,11 @@ def main():
         buf.compute_gae(last_value=last_value, gamma=args.gamma, lam=args.gae_lambda, normalize_adv=True)
 
         # ===== PPO Update =====
-        policy_losses = []
-        value_losses = []
-        entropies = []
-        approx_kls = []
-        clipfracs = []
+        policy_losses: list[float] = []
+        value_losses: list[float] = []
+        entropies: list[float] = []
+        approx_kls: list[float] = []
+        clipfracs: list[float] = []
 
         for _epoch in range(args.epochs):
             for batch in buf.get_batches(batch_size=args.minibatch, shuffle=True):
@@ -336,18 +347,18 @@ def main():
                 optimizer.step()
 
                 with torch.no_grad():
-                    approx_kl = float((batch.old_logprobs - new_logp).mean().item())
+                    # FIX: use a non-negative diagnostic; mean(old-new) can be negative
+                    approx_kl = float((batch.old_logprobs - new_logp).mean().abs().item())
                     clipfrac = float((torch.abs(ratio - 1.0) > args.clip_eps).float().mean().item())
 
                 policy_losses.append(float(loss_pi.item()))
                 value_losses.append(float(loss_v.item()))
                 entropies.append(float(entropy.item()))
                 approx_kls.append(approx_kl)
-                clipfracs.append(clipfrac)
-                clipfracs.append(clipfrac)
+                clipfracs.append(clipfrac)  # FIX: append ONCE (you had it twice)
 
             # Early stop PPO epoch loop if KL too big
-            if args.target_kl > 0 and (len(approx_kls) > 0) and (np.mean(approx_kls) > args.target_kl):
+            if args.target_kl > 0 and approx_kls and (np.mean(approx_kls) > args.target_kl):
                 break
 
         # ===== Logging =====
@@ -361,7 +372,6 @@ def main():
         writer.add_scalar("train/episodes", float(episode_count), global_step)
 
         # Value function explained variance
-        # Ensure numpy arrays
         ev = explained_variance(np.asarray(buf.values), np.asarray(buf.returns))
         writer.add_scalar("ppo/explained_variance", ev, global_step)
 
@@ -380,7 +390,8 @@ def main():
         # ===== Validation + Best model saving + Early stop =====
         if args.val_every_rollouts > 0 and (rollout_idx % args.val_every_rollouts == 0):
             model.eval()
-            val = validation_run_ppo(env_val, model, episodes=20, device=str(device), greedy=True)
+            # FIX: pass torch.device, not str(device)
+            val = validation_run_ppo(env_val, model, episodes=20, device=device, greedy=True)
             model.train()
 
             for k, v in val.items():
